@@ -19,6 +19,7 @@ export interface ObjectMeta {
   sideJobType?: import('@utils/sideJob').SideJobType
   /** Резервная копия кода подключения к объекту */
   inviteCode?: string
+  wizard?: import('@/types/objectWizard').ObjectWizardMeta
 }
 
 export interface TeamMember {

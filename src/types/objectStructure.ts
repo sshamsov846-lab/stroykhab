@@ -133,6 +133,11 @@ export interface GeneratedObjectStructure {
   apartments: Record<string, GeneratedApartment>
   zones: Record<string, GeneratedZone>
   territoryOptions: WizardTerritoryOptions
+  wizardMeta?: import('@/types/objectWizard').ObjectWizardMeta
+  excelImport?: {
+    rows: import('@/types/projectExcel').ExcelApartmentRow[]
+    summary: import('@/types/projectExcel').ExcelProjectSummary
+  }
   summary: {
     sections: number
     houses: number

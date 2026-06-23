@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react'
 
 import { useNavigate } from 'react-router-dom'
 
-import { ArrowLeft, Plus, Trash2, Sparkles, CheckCircle2, Layers, Building2, ChevronRight } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Sparkles, CheckCircle2, Layers, Building2, ChevronRight, Calendar, User, Phone, MapPin } from 'lucide-react'
 
 import toast from 'react-hot-toast'
 
@@ -55,6 +55,25 @@ import {
   DEFAULT_HOUSE_ZONE_OPTIONS,
   DEFAULT_TERRITORY_OPTIONS,
 } from '@/types/objectStructure'
+
+import {
+  OBJECT_TYPE_OPTIONS,
+  WORK_SCOPE_OPTIONS,
+  INDIVIDUAL_WORK_OPTIONS,
+  OBJECT_TYPE_PRESETS,
+  calcProjectDays,
+  type ObjectWizardType,
+  type ObjectWorkScopeMode,
+  type ObjectWizardMeta,
+} from '@/types/objectWizard'
+import type { WorkType } from '@types'
+import { buildSectionsForObjectType, applyWorkTemplateToSections } from '@utils/objectWizardPresets'
+import { ObjectPhotosUpload } from '@components/object/ObjectPhotosUpload'
+import { ProjectUploadBlock, type StructureInputMode } from '@components/object/ProjectUploadBlock'
+import { ProjectStructureSummary } from '@components/object/ProjectStructureSummary'
+import { useObjectDocumentStore } from '@store/objectDocumentStore'
+import { workTemplateFromScope } from '@/types/objectWizard'
+import type { ExcelApartmentRow, ExcelProjectPreview, PendingProjectAttachment, ExcelProjectSummary } from '@/types/projectExcel'
 
 
 
@@ -189,6 +208,7 @@ export const ClientObjectWizard: React.FC = () => {
   const importHierarchy = useProjectWorkflowStore((s) => s.importHierarchy)
 
   const saveCustomStructure = useClientPortalStore((s) => s.saveCustomStructure)
+  const uploadDocument = useObjectDocumentStore((s) => s.uploadDocument)
   const createInviteForObject = useObjectAccessStore((s) => s.createInviteForObject)
   const setMaterialPaymentSettings = useMaterialStore((s) => s.setObjectPaymentSettings)
 
@@ -227,7 +247,70 @@ export const ClientObjectWizard: React.FC = () => {
   const [materialPolicy, setMaterialPolicy] = useState<MaterialPaymentPolicy>('client_material')
   const [reimbursementSource, setReimbursementSource] = useState<'client' | 'organization'>('client')
 
+  const [objectType, setObjectType] = useState<ObjectWizardType>('novostroyka')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  const [description, setDescription] = useState('')
+  const [photoUrls, setPhotoUrls] = useState<string[]>([])
+  const [workScopeMode, setWorkScopeMode] = useState<ObjectWorkScopeMode>('rough')
+  const [selectedWorkTypes, setSelectedWorkTypes] = useState<WorkType[]>([])
+  const [siteContactName, setSiteContactName] = useState('')
+  const [siteContactPhone, setSiteContactPhone] = useState('')
+
   const [editingApartmentsId, setEditingApartmentsId] = useState<string | null>(null)
+
+  const [structureInputMode, setStructureInputMode] = useState<StructureInputMode>('manual')
+  const [excelApplied, setExcelApplied] = useState(false)
+  const [excelRows, setExcelRows] = useState<ExcelApartmentRow[]>([])
+  const [excelPreview, setExcelPreview] = useState<ExcelProjectPreview | null>(null)
+  const [excelFileName, setExcelFileName] = useState('')
+  const [projectAttachments, setProjectAttachments] = useState<PendingProjectAttachment[]>([])
+  const [plotAreaSotkas, setPlotAreaSotkas] = useState<number>(0)
+
+  const typePreset = OBJECT_TYPE_PRESETS[objectType]
+  const projectDays = useMemo(() => calcProjectDays(startDate, endDate), [startDate, endDate])
+
+  const wizardMeta = useMemo<ObjectWizardMeta>(
+    () => ({
+      objectType,
+      description: description.trim(),
+      photoUrls,
+      startDate,
+      endDate,
+      workScopeMode,
+      selectedWorkTypes,
+      siteContactName: siteContactName.trim(),
+      siteContactPhone: siteContactPhone.trim(),
+      plotAreaSotkas: plotAreaSotkas > 0 ? plotAreaSotkas : undefined,
+    }),
+    [objectType, description, photoUrls, startDate, endDate, workScopeMode, selectedWorkTypes, siteContactName, siteContactPhone, plotAreaSotkas],
+  )
+
+  const applyObjectType = (type: ObjectWizardType) => {
+    setObjectType(type)
+    const preset = OBJECT_TYPE_PRESETS[type]
+    setTerritoryOptions({ ...preset.territoryOptions })
+    setSections(buildSectionsForObjectType(type, workScopeMode))
+  }
+
+  const toggleWorkType = (wt: WorkType) => {
+    setSelectedWorkTypes((prev) =>
+      prev.includes(wt) ? prev.filter((t) => t !== wt) : [...prev, wt],
+    )
+  }
+
+  const goNextFromBase = () => {
+    if (startDate && endDate && projectDays === null) {
+      toast.error('Дата сдачи должна быть не раньше даты начала')
+      return
+    }
+    if (workScopeMode === 'custom' && selectedWorkTypes.length === 0) {
+      toast.error('Выберите хотя бы один вид работ')
+      return
+    }
+    setSections((prev) => applyWorkTemplateToSections(prev, workScopeMode, objectType))
+    setStep(1)
+  }
 
 
 
@@ -319,7 +402,14 @@ export const ClientObjectWizard: React.FC = () => {
 
     }
 
-    const notReady = allHouses.filter((h) => !h.house.structureConfigured || !h.house.apartmentsConfigured)
+    const notReady = structureInputMode === 'manual'
+      ? allHouses.filter((h) => !h.house.structureConfigured || !h.house.apartmentsConfigured)
+      : excelApplied ? [] : [{ house: { structureConfigured: false } as WizardHouseDraft }]
+
+    if (structureInputMode === 'excel' && !excelApplied) {
+      toast.error('Загрузите Excel и подтвердите создание зон')
+      return
+    }
 
     if (notReady.length) {
 
@@ -359,6 +449,30 @@ export const ClientObjectWizard: React.FC = () => {
 
         total_houses: sections.reduce((s, sec) => s + sec.houses.length, 0),
 
+        start_date: startDate || undefined,
+
+        end_date: endDate || undefined,
+
+        photo_url: photoUrls[0],
+
+        photo_urls: photoUrls.length ? photoUrls : undefined,
+
+        object_type: objectType,
+
+        description: description.trim() || undefined,
+
+        site_contact_name: siteContactName.trim() || undefined,
+
+        site_contact_phone: siteContactPhone.trim() || undefined,
+
+        work_scope_mode: workScopeMode,
+
+        selected_work_types: workScopeMode === 'custom' ? selectedWorkTypes : undefined,
+
+        client_name: siteContactName.trim() || undefined,
+
+        client_phone: siteContactPhone.trim() || undefined,
+
       })
 
 
@@ -367,13 +481,22 @@ export const ClientObjectWizard: React.FC = () => {
 
         apartmentsPerFloor: 4,
 
-        workTemplate: 'rough',
+        workTemplate: sections[0]?.houses[0]?.workTemplate ?? 'rough',
 
-      }, territoryOptions)
+      }, territoryOptions, excelApplied && excelRows.length ? { excelRows } : undefined)
 
+      structure.wizardMeta = wizardMeta
 
+      if (excelApplied && excelPreview) {
+        const excelSummary: ExcelProjectSummary = {
+          ...excelPreview,
+          sourceFileName: excelFileName,
+          importedAt: new Date().toISOString(),
+        }
+        structure.excelImport = { rows: excelRows, summary: excelSummary }
+      }
 
-      registerObject(obj, orgs, { kind: 'building', housesCount: structure.summary.houses })
+      registerObject(obj, orgs, { kind: 'building', housesCount: structure.summary.houses, wizard: wizardMeta })
       const { fullName, phone, role } = useUserStore.getState()
       setMaterialPaymentSettings(obj.id, {
         policy: materialPolicy,
@@ -384,6 +507,44 @@ export const ClientObjectWizard: React.FC = () => {
       saveCustomStructure(structure)
 
       importHierarchy(obj.id, importRows)
+
+      const { fullName: uploaderName, role: uploaderRole } = useUserStore.getState()
+
+      if (excelApplied && excelFileName) {
+        const excelAtt = projectAttachments.find((a) => a.kind === 'excel')
+        const excelUrl = excelAtt?.fileUrl
+        if (excelUrl) {
+          uploadDocument({
+            objectId: obj.id,
+            title: 'Проект объекта (Excel)',
+            category: 'project',
+            description: 'Исходный файл Excel с квартирами',
+            access: 'all',
+            fileName: excelFileName,
+            fileUrl: excelUrl,
+            mimeType: excelAtt?.mimeType ?? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            fileSize: excelAtt?.fileSize ?? 0,
+            uploadedBy: uploaderName,
+            uploadedByRole: uploaderRole,
+          })
+        }
+      }
+
+      for (const att of projectAttachments.filter((a) => a.kind === 'attachment')) {
+        uploadDocument({
+          objectId: obj.id,
+          title: att.fileName,
+          category: att.mimeType === 'application/pdf' ? 'blueprints' : 'project',
+          description: att.description ?? 'Проект объекта (смотреть прорабу)',
+          access: 'all',
+          fileName: att.fileName,
+          fileUrl: att.fileUrl,
+          mimeType: att.mimeType,
+          fileSize: att.fileSize,
+          uploadedBy: uploaderName,
+          uploadedByRole: uploaderRole,
+        })
+      }
 
       const invite = createInviteForObject(
         obj.id,
@@ -482,6 +643,63 @@ export const ClientObjectWizard: React.FC = () => {
     )
 
   }
+
+
+
+  const projectUploadSection = (
+    <>
+      <ProjectUploadBlock
+        mode={structureInputMode}
+        onModeChange={(m) => {
+          setStructureInputMode(m)
+          if (m === 'manual') {
+            setExcelApplied(false)
+            setExcelRows([])
+            setExcelPreview(null)
+          }
+        }}
+        excelApplied={excelApplied}
+        excelPreview={excelPreview}
+        excelFileName={excelFileName}
+        attachments={projectAttachments.filter((a) => a.kind === 'attachment')}
+        workTemplate={workTemplateFromScope(workScopeMode)}
+        zoneOptions={typePreset.zoneOptions}
+        onExcelApplied={({ rows, preview, fileName, fileUrl, mimeType, fileSize, sections: newSections }) => {
+          setExcelRows(rows)
+          setExcelPreview(preview)
+          setExcelFileName(fileName)
+          setExcelApplied(true)
+          setSections(newSections)
+          setProjectAttachments((prev) => [
+            ...prev.filter((a) => a.kind !== 'excel'),
+            {
+              id: `excel-${Date.now()}`,
+              fileName,
+              fileUrl,
+              mimeType,
+              fileSize,
+              kind: 'excel',
+            },
+          ])
+        }}
+        onExcelCleared={() => {
+          setExcelApplied(false)
+          setExcelRows([])
+          setExcelPreview(null)
+          setExcelFileName('')
+          setProjectAttachments((prev) => prev.filter((a) => a.kind !== 'excel'))
+          setSections(buildSectionsForObjectType(objectType, workScopeMode))
+        }}
+        onAttachmentAdded={(file) => setProjectAttachments((prev) => [...prev, file])}
+        onAttachmentRemoved={(id) => setProjectAttachments((prev) => prev.filter((a) => a.id !== id))}
+      />
+      <ProjectStructureSummary
+        preview={excelPreview}
+        plotAreaSotkas={plotAreaSotkas}
+        excelApplied={excelApplied}
+      />
+    </>
+  )
 
 
 
@@ -986,7 +1204,153 @@ export const ClientObjectWizard: React.FC = () => {
             </div>
 
             <div className="bg-white rounded-2xl p-4 border border-gray-100 space-y-3">
-              <p className="text-sm-mobile font-semibold text-gray-800">Территория ЖК</p>
+              <p className="text-sm-mobile font-semibold text-gray-800">Тип объекта</p>
+              <p className="text-xs-mobile text-gray-500">Влияет на зоны и структуру на следующих шагах</p>
+              <div className="space-y-2">
+                {OBJECT_TYPE_OPTIONS.map((opt) => {
+                  const selected = objectType === opt.id
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => { haptic('selection'); applyObjectType(opt.id) }}
+                      className={`w-full text-left p-3 rounded-xl border-2 transition-all ${
+                        selected ? 'border-primary-500 bg-primary-50' : 'border-gray-100 bg-gray-50'
+                      }`}
+                    >
+                      <p className="text-sm-mobile font-semibold text-gray-900">{opt.title}</p>
+                      <p className="text-xs-mobile text-gray-500 mt-0.5">{opt.desc}</p>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl p-4 border border-gray-100 space-y-3">
+              <p className="text-sm-mobile font-semibold text-gray-800 flex items-center gap-2">
+                <Calendar size={16} className="text-primary-600" />
+                Сроки
+              </p>
+              <div className="grid grid-cols-1 gap-3">
+                <div>
+                  <label className="text-xs-mobile font-medium text-gray-600">Дата начала работ</label>
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className="mt-1 w-full min-h-[44px] px-4 rounded-xl border border-gray-200 text-base-mobile"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs-mobile font-medium text-gray-600">Планируемая дата сдачи</label>
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    className="mt-1 w-full min-h-[44px] px-4 rounded-xl border border-gray-200 text-base-mobile"
+                  />
+                </div>
+              </div>
+              {projectDays != null && (
+                <p className="text-sm-mobile text-primary-700 bg-primary-50 rounded-xl px-3 py-2">
+                  На объект: <span className="font-bold">{projectDays}</span> {projectDays === 1 ? 'день' : projectDays < 5 ? 'дня' : 'дней'}
+                </p>
+              )}
+            </div>
+
+            <div className="bg-white rounded-2xl p-4 border border-gray-100 space-y-3">
+              <p className="text-sm-mobile font-semibold text-gray-800 flex items-center gap-2">
+                <MapPin size={16} className="text-primary-600" />
+                Фото объекта
+              </p>
+              <ObjectPhotosUpload value={photoUrls} onChange={setPhotoUrls} />
+            </div>
+
+            <div className="bg-white rounded-2xl p-4 border border-gray-100 space-y-3">
+              <label className="text-sm-mobile font-semibold text-gray-800">Описание / Особенности</label>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Пожелания, особенности участка, ограничения по шуму, доступ на объект..."
+                rows={4}
+                className="w-full px-4 py-3 rounded-xl border border-gray-200 text-base-mobile resize-none"
+              />
+            </div>
+
+            <div className="bg-white rounded-2xl p-4 border border-gray-100 space-y-3">
+              <p className="text-sm-mobile font-semibold text-gray-800">Что нужно сделать</p>
+              <div className="space-y-2">
+                {WORK_SCOPE_OPTIONS.map((opt) => (
+                  <label
+                    key={opt.id}
+                    className={`flex items-start gap-3 p-3 rounded-xl border-2 cursor-pointer transition-all ${
+                      workScopeMode === opt.id ? 'border-primary-500 bg-primary-50' : 'border-gray-100'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="workScope"
+                      checked={workScopeMode === opt.id}
+                      onChange={() => setWorkScopeMode(opt.id)}
+                      className="mt-1 text-primary-600"
+                    />
+                    <div>
+                      <p className="text-sm-mobile font-medium text-gray-900">{opt.label}</p>
+                      <p className="text-xs-mobile text-gray-500">{opt.hint}</p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+              {workScopeMode === 'custom' && (
+                <div className="pt-2 border-t border-gray-100 space-y-2">
+                  <p className="text-xs-mobile font-medium text-gray-600">Отдельные виды работ</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {INDIVIDUAL_WORK_OPTIONS.map((wt) => (
+                      <label key={wt.id} className="flex items-center gap-2 text-sm-mobile">
+                        <input
+                          type="checkbox"
+                          checked={selectedWorkTypes.includes(wt.id)}
+                          onChange={() => toggleWorkType(wt.id)}
+                          className="rounded border-gray-300 text-primary-600"
+                        />
+                        {wt.label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-white rounded-2xl p-4 border border-gray-100 space-y-3">
+              <p className="text-sm-mobile font-semibold text-gray-800">Контакт на объекте</p>
+              <div>
+                <label className="text-xs-mobile font-medium text-gray-600 flex items-center gap-1">
+                  <User size={12} /> Имя ответственного
+                </label>
+                <input
+                  value={siteContactName}
+                  onChange={(e) => setSiteContactName(e.target.value)}
+                  placeholder="Иванов И.И."
+                  className="mt-1 w-full min-h-[44px] px-4 rounded-xl border border-gray-200 text-base-mobile"
+                />
+              </div>
+              <div>
+                <label className="text-xs-mobile font-medium text-gray-600 flex items-center gap-1">
+                  <Phone size={12} /> Телефон для связи
+                </label>
+                <input
+                  type="tel"
+                  value={siteContactPhone}
+                  onChange={(e) => setSiteContactPhone(e.target.value)}
+                  placeholder="+7 (999) 123-45-67"
+                  className="mt-1 w-full min-h-[44px] px-4 rounded-xl border border-gray-200 text-base-mobile"
+                />
+              </div>
+            </div>
+
+            {typePreset.showTerritoryBlock && (
+            <div className="bg-white rounded-2xl p-4 border border-gray-100 space-y-3">
+              <p className="text-sm-mobile font-semibold text-gray-800">Территория</p>
               <p className="text-xs-mobile text-gray-500">Отметьте, что есть на объекте</p>
               {(
                 [
@@ -1006,7 +1370,20 @@ export const ClientObjectWizard: React.FC = () => {
                   {label}
                 </label>
               ))}
+              <div className="pt-2 border-t border-gray-100">
+                <label className="text-xs-mobile text-gray-500">Площадь участка (сотки), если есть</label>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={plotAreaSotkas || ''}
+                  onChange={(e) => setPlotAreaSotkas(Math.max(0, Number(e.target.value) || 0))}
+                  placeholder="Напр. 12"
+                  className="mt-1 w-full min-h-[44px] px-4 rounded-xl border border-gray-200 text-base-mobile"
+                />
+              </div>
             </div>
+            )}
 
             <ChainModeSelector
               value={chainMode}
@@ -1034,6 +1411,16 @@ export const ClientObjectWizard: React.FC = () => {
 
           <div className="space-y-4">
 
+            {projectUploadSection}
+
+            {(structureInputMode === 'manual' || excelApplied) && (
+            <>
+            {!typePreset.showMultiSection && structureInputMode === 'manual' && (
+              <p className="text-sm-mobile text-gray-600 bg-primary-50 border border-primary-100 rounded-xl px-3 py-2">
+                Для типа «{OBJECT_TYPE_OPTIONS.find((o) => o.id === objectType)?.title}» — одна единица. При необходимости уточните параметры на следующих шагах.
+              </p>
+            )}
+
             {sections.map((sec, si) => (
 
               <div key={sec.id} className="bg-white rounded-2xl p-4 border border-gray-100 space-y-3">
@@ -1056,7 +1443,7 @@ export const ClientObjectWizard: React.FC = () => {
 
                   </div>
 
-                  {sections.length > 1 && (
+                  {sections.length > 1 && typePreset.showMultiSection && (
 
                     <button
 
@@ -1086,7 +1473,7 @@ export const ClientObjectWizard: React.FC = () => {
 
                     <span className="flex-1 text-sm-mobile font-medium text-gray-900">{house.name}</span>
 
-                    {sec.houses.length > 1 && (
+                    {sec.houses.length > 1 && typePreset.showMultiSection && (
 
                       <button
 
@@ -1110,6 +1497,7 @@ export const ClientObjectWizard: React.FC = () => {
 
                 ))}
 
+                {typePreset.showMultiSection && (
                 <button
 
                   type="button"
@@ -1141,11 +1529,13 @@ export const ClientObjectWizard: React.FC = () => {
                   Добавить дом
 
                 </button>
+                )}
 
               </div>
 
             ))}
 
+            {typePreset.showMultiSection && (
             <BigButton
 
               variant="secondary"
@@ -1163,6 +1553,10 @@ export const ClientObjectWizard: React.FC = () => {
               Добавить секцию
 
             </BigButton>
+            )}
+
+            </>
+            )}
 
           </div>
 
@@ -1175,9 +1569,9 @@ export const ClientObjectWizard: React.FC = () => {
           <div className="space-y-4">
 
             <p className="text-sm-mobile text-gray-600">
-
-              Настройте каждый дом отдельно — подъезды и этажи могут отличаться.
-
+              {excelApplied
+                ? 'Структура из Excel. При необходимости уточните подъезды и этажи.'
+                : 'Настройте каждый дом отдельно — подъезды и этажи могут отличаться.'}
             </p>
 
             {editingStructureId ? (
@@ -1252,7 +1646,7 @@ export const ClientObjectWizard: React.FC = () => {
 
             )}
 
-            {!editingStructureId && preview.basementZones > 0 && (
+            {!editingStructureId && preview.basementZones > 0 && structureInputMode === 'manual' && (
 
               <div className="bg-primary-50 border border-primary-100 rounded-xl p-3 text-sm-mobile text-primary-800">
 
@@ -1416,12 +1810,25 @@ export const ClientObjectWizard: React.FC = () => {
 
               onClick={() => {
 
-                if (step === 2 && allHouses.some((h) => !h.house.structureConfigured)) {
-
-                  toast.error('Настройте все дома на этом шаге')
-
+                if (step === 0) {
+                  goNextFromBase()
                   return
+                }
 
+                if (step === 1 && structureInputMode === 'excel' && !excelApplied) {
+                  toast.error('Загрузите Excel и нажмите «Создать зоны из Excel»')
+                  return
+                }
+
+                if (step === 2) {
+                  if (structureInputMode === 'excel' && !excelApplied) {
+                    toast.error('Загрузите Excel и подтвердите создание зон')
+                    return
+                  }
+                  if (structureInputMode === 'manual' && allHouses.some((h) => !h.house.structureConfigured)) {
+                    toast.error('Настройте все дома на этом шаге')
+                    return
+                  }
                 }
 
                 setStep(step + 1)

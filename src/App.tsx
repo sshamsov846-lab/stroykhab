@@ -1,12 +1,18 @@
-import React, { Suspense, lazy, useEffect } from 'react'
+import React, { Suspense, lazy, useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import { useTelegram } from '@hooks/useTelegram'
-import { useUserStore } from '@store/userStore'
+import { useUserStore, type AppRole } from '@store/userStore'
 import { useObjectStore } from '@store/objectStore'
+import { useDirectoryStore } from '@store/directoryStore'
+import { usePersonProfileStore } from '@store/personProfileStore'
+import { useOrganizationStore } from '@store/organizationStore'
+import { useProjectWorkflowStore } from '@store/projectWorkflowStore'
 import { initCrossTabStorageSync } from '@utils/crossTabStorageSync'
 import { rebuildInviteRegistryFromStores } from '@utils/inviteCodeRegistry'
 import { syncOrganizationRegistryFromStores } from '@utils/objectChain'
+import { syncDirectoryFromApp } from '@utils/directorySync'
+import { syncUsersFromAuth, useUsersStore } from '@store/usersStore'
 import {
   loadInvitesFromDisk,
   loadObjectMetaFromDisk,
@@ -62,6 +68,65 @@ const PageLoader = () => (
   </div>
 )
 
+/** Ждём rehydrate Zustand перед роутингом */
+const AppBootstrap: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [ready, setReady] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+
+    const finish = () => {
+      if (cancelled) return
+      useUserStore.getState().recoverAccounts()
+      syncUsersFromAuth(useUserStore.getState().accounts)
+      syncDirectoryFromApp()
+      syncOrganizationRegistryFromStores()
+      useUserStore.getState().hydrateSession()
+      setReady(true)
+    }
+
+    const timeout = window.setTimeout(finish, 3000)
+
+    void Promise.all([
+      useUserStore.persist.rehydrate(),
+      useUsersStore.persist.rehydrate(),
+      useDirectoryStore.persist.rehydrate(),
+      usePersonProfileStore.persist.rehydrate(),
+      useOrganizationStore.persist.rehydrate(),
+      useProjectWorkflowStore.persist.rehydrate(),
+    ])
+      .then(() => {
+        window.clearTimeout(timeout)
+        finish()
+      })
+      .catch(() => {
+        window.clearTimeout(timeout)
+        finish()
+      })
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeout)
+    }
+  }, [])
+
+  if (!ready) return <PageLoader />
+  return <>{children}</>
+}
+
+function RoleGate({
+  allow,
+  children,
+}: {
+  allow: AppRole | AppRole[]
+  children: React.ReactNode
+}) {
+  const role = useUserStore((s) => s.role)
+  const allowed = Array.isArray(allow) ? allow : [allow]
+  if (!allowed.includes(role)) return <Navigate to="/" replace />
+  return <>{children}</>
+}
+
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const registered = useUserStore((s) => s.registered)
   const location = useLocation()
@@ -74,19 +139,16 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 const AppContent: React.FC = () => {
   const { tg, isDark } = useTelegram()
   const registered = useUserStore((s) => s.registered)
-  const role = useUserStore((s) => s.role)
-  const hydrateSession = useUserStore((s) => s.hydrateSession)
 
   useEffect(() => {
     initCrossTabStorageSync()
-    hydrateSession()
     syncOrganizationRegistryFromStores()
     rebuildInviteRegistryFromStores(
       loadInvitesFromDisk(),
       loadObjectMetaFromDisk(),
       buildObjectNameMap(useObjectStore.getState().userObjects, loadUserObjectsFromDisk()),
     )
-  }, [hydrateSession])
+  }, [])
 
   useEffect(() => {
     if (!tg) return
@@ -105,45 +167,60 @@ const AppContent: React.FC = () => {
           <Route path="/register" element={registered ? <Navigate to="/" replace /> : <Register />} />
 
           <Route path="/" element={<RequireAuth><RoleHome /></RequireAuth>} />
-          <Route path="/objects" element={<RequireAuth>{role === 'client' ? <ClientObjects /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/finances" element={<RequireAuth>{role === 'client' ? <ClientFinances /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/finances/foremen" element={<RequireAuth>{role === 'client' ? <OrgForemanPayroll /> : <Navigate to="/" replace />}</RequireAuth>} />
           <Route path="/notifications" element={<RequireAuth><AppNotifications /></RequireAuth>} />
           <Route path="/connect" element={<RequireAuth><ConnectToObject /></RequireAuth>} />
-          <Route path="/client/object/new" element={<RequireAuth>{role === 'client' ? <ClientObjectWizard /> : <Navigate to="/" replace />}</RequireAuth>} />
+          <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
+          <Route path="/export" element={<RequireAuth><ExportDataPage /></RequireAuth>} />
+          <Route path="/materials" element={<RequireAuth><MaterialsPage /></RequireAuth>} />
+
+          {/* Заказчик */}
+          <Route path="/objects" element={<RequireAuth><RoleGate allow="client"><ClientObjects /></RoleGate></RequireAuth>} />
+          <Route path="/finances" element={<RequireAuth><RoleGate allow="client"><ClientFinances /></RoleGate></RequireAuth>} />
+          <Route path="/finances/foremen" element={<RequireAuth><RoleGate allow="client"><OrgForemanPayroll /></RoleGate></RequireAuth>} />
+          <Route path="/client/object/new" element={<RequireAuth><RoleGate allow="client"><ClientObjectWizard /></RoleGate></RequireAuth>} />
+          <Route path="/client/:id" element={<RequireAuth><ClientView /></RequireAuth>} />
+
+          {/* Объекты — вложенные маршруты выше :id */}
           <Route path="/object/new" element={<RequireAuth><NewObject /></RequireAuth>} />
-          <Route path="/object/:id" element={<RequireAuth><ObjectDetail /></RequireAuth>} />
+          <Route path="/object/:id/setup" element={<RequireAuth><ProjectSetup /></RequireAuth>} />
           <Route path="/object/:id/task/new" element={<RequireAuth><CreateTask /></RequireAuth>} />
           <Route path="/object/:id/expense/new" element={<RequireAuth><CreateExpense /></RequireAuth>} />
-          <Route path="/task/:id" element={<RequireAuth><TaskDetail /></RequireAuth>} />
-          <Route path="/worker" element={<RequireAuth><WorkerDashboard /></RequireAuth>} />
-          <Route path="/subcontractor/team" element={<RequireAuth>{role === 'subcontractor' ? <SubcontractorTeam /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/subcontractor/team/:memberType/:memberId" element={<RequireAuth>{role === 'subcontractor' ? <OrgTeamMemberDetail /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/subcontractor/tasks" element={<RequireAuth>{role === 'subcontractor' ? <SubcontractorTasks /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/worker/money" element={<RequireAuth>{role === 'worker' ? <WorkerMoney /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/worker/calculators" element={<RequireAuth>{role === 'worker' ? <WorkerCalculatorHistory /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/foreman/calculator-reports" element={<RequireAuth>{role === 'foreman' ? <ForemanCalculatorReports /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/payroll" element={<RequireAuth>{role === 'foreman' ? <ForemanPayroll /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/rates" element={<RequireAuth>{role === 'foreman' ? <ForemanRates /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/payment-settings" element={<RequireAuth>{role === 'foreman' || role === 'subcontractor' ? <PaymentSettingsPage /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/payroll/:workerId" element={<RequireAuth>{role === 'foreman' ? <WorkerAccountPage /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/subcontractor/payroll" element={<RequireAuth>{role === 'subcontractor' ? <SubcontractorPayroll /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/subcontractor/payroll/:workerId" element={<RequireAuth>{role === 'subcontractor' ? <WorkerAccountPage /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/team" element={<RequireAuth>{role === 'foreman' ? <Team /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/side-job/new" element={<RequireAuth>{role === 'foreman' ? <CreateSideJob /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/side-job/:id" element={<RequireAuth>{role === 'foreman' ? <SideJobDetail /> : <Navigate to="/" replace />}</RequireAuth>} />
-          <Route path="/timesheet" element={<RequireAuth>{role === 'foreman' ? <TimesheetPage /> : <Navigate to="/" replace />}</RequireAuth>} />
           <Route path="/object/:id/acceptance-acts" element={<RequireAuth><AcceptanceActsPage /></RequireAuth>} />
           <Route path="/object/:id/payment-acts" element={<RequireAuth><PaymentActsPage /></RequireAuth>} />
           <Route path="/object/:id/hidden-works" element={<RequireAuth><HiddenWorksArchive /></RequireAuth>} />
           <Route path="/object/:id/documents" element={<RequireAuth><ObjectDocumentsPage /></RequireAuth>} />
-          <Route path="/object/:id/setup" element={<RequireAuth><ProjectSetup /></RequireAuth>} />
+          <Route path="/object/:id" element={<RequireAuth><ObjectDetail /></RequireAuth>} />
+
+          {/* Workflow */}
           <Route path="/workflow/:taskId/sub/:subWorkId" element={<RequireAuth><SubWorkWorkflowDetail /></RequireAuth>} />
           <Route path="/workflow/:taskId" element={<RequireAuth><TaskWorkflowDetail /></RequireAuth>} />
-          <Route path="/materials" element={<RequireAuth><MaterialsPage /></RequireAuth>} />
-          <Route path="/export" element={<RequireAuth><ExportDataPage /></RequireAuth>} />
-          <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
-          <Route path="/client/:id" element={<RequireAuth><ClientView /></RequireAuth>} />
+          <Route path="/task/:id" element={<RequireAuth><TaskDetail /></RequireAuth>} />
+
+          {/* Прораб + мастер — задачи */}
+          <Route path="/worker" element={<RequireAuth><RoleGate allow={['foreman', 'worker']}><WorkerDashboard /></RoleGate></RequireAuth>} />
+          <Route path="/worker/money" element={<RequireAuth><RoleGate allow="worker"><WorkerMoney /></RoleGate></RequireAuth>} />
+          <Route path="/worker/calculators" element={<RequireAuth><RoleGate allow="worker"><WorkerCalculatorHistory /></RoleGate></RequireAuth>} />
+
+          {/* Прораб */}
+          <Route path="/team" element={<RequireAuth><RoleGate allow="foreman"><Team /></RoleGate></RequireAuth>} />
+          <Route path="/payroll" element={<RequireAuth><RoleGate allow="foreman"><ForemanPayroll /></RoleGate></RequireAuth>} />
+          <Route path="/payroll/:workerId" element={<RequireAuth><RoleGate allow="foreman"><WorkerAccountPage /></RoleGate></RequireAuth>} />
+          <Route path="/rates" element={<RequireAuth><RoleGate allow="foreman"><ForemanRates /></RoleGate></RequireAuth>} />
+          <Route path="/foreman/calculator-reports" element={<RequireAuth><RoleGate allow="foreman"><ForemanCalculatorReports /></RoleGate></RequireAuth>} />
+          <Route path="/side-job/new" element={<RequireAuth><RoleGate allow="foreman"><CreateSideJob /></RoleGate></RequireAuth>} />
+          <Route path="/side-job/:id" element={<RequireAuth><RoleGate allow="foreman"><SideJobDetail /></RoleGate></RequireAuth>} />
+          <Route path="/timesheet" element={<RequireAuth><RoleGate allow="foreman"><TimesheetPage /></RoleGate></RequireAuth>} />
+
+          {/* Организация */}
+          <Route path="/subcontractor/team" element={<RequireAuth><RoleGate allow="subcontractor"><SubcontractorTeam /></RoleGate></RequireAuth>} />
+          <Route path="/subcontractor/team/:memberType/:memberId" element={<RequireAuth><RoleGate allow="subcontractor"><OrgTeamMemberDetail /></RoleGate></RequireAuth>} />
+          <Route path="/subcontractor/tasks" element={<RequireAuth><RoleGate allow="subcontractor"><SubcontractorTasks /></RoleGate></RequireAuth>} />
+          <Route path="/subcontractor/payroll" element={<RequireAuth><RoleGate allow="subcontractor"><SubcontractorPayroll /></RoleGate></RequireAuth>} />
+          <Route path="/subcontractor/payroll/:workerId" element={<RequireAuth><RoleGate allow="subcontractor"><WorkerAccountPage /></RoleGate></RequireAuth>} />
+
+          {/* Прораб + организация */}
+          <Route path="/payment-settings" element={<RequireAuth><RoleGate allow={['foreman', 'subcontractor']}><PaymentSettingsPage /></RoleGate></RequireAuth>} />
+
           <Route path="*" element={<Navigate to={registered ? '/' : '/register'} replace />} />
         </Routes>
       </Suspense>
@@ -158,6 +235,8 @@ const AppContent: React.FC = () => {
 
 export const App: React.FC = () => (
   <BrowserRouter>
-    <AppContent />
+    <AppBootstrap>
+      <AppContent />
+    </AppBootstrap>
   </BrowserRouter>
 )

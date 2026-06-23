@@ -21,6 +21,7 @@ import { useProjectWorkflowStore } from '@store/projectWorkflowStore'
 import { countPendingHiddenWorks } from '@utils/hiddenWorks'
 
 import { ObjectPresentPanel } from '@components/attendance/ObjectPresentPanel'
+import { ObjectProjectPanel } from '@components/object/ObjectProjectPanel'
 
 import { ObjectRemarksPanel } from '@components/quality/ObjectRemarksPanel'
 import { ObjectWorkerAccessPanel } from '@components/objectAccess/ObjectWorkerAccessPanel'
@@ -253,6 +254,8 @@ export const ObjectDetail: React.FC = () => {
       <div className="px-4 py-3 space-y-2">
 
         {id && <ObjectPresentPanel objectId={id} />}
+
+        {id && <ObjectProjectPanel objectId={id} />}
 
         {id && <ObjectRemarksPanel objectId={id} />}
 

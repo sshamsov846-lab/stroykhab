@@ -5,6 +5,7 @@ import type { PersonProfile } from '@/types/person'
 import { generatePersonCode, normalizePersonCode } from '@utils/personCodes'
 import type { PersonCodePrefix } from '@utils/personCodes'
 import { useOrganizationStore } from '@store/organizationStore'
+import { useDirectoryStore } from '@store/directoryStore'
 
 interface PersonProfileState {
   profiles: Record<string, PersonProfile>
@@ -36,9 +37,27 @@ export const usePersonProfileStore = create<PersonProfileState>()(
 
       getByCode: (code) => {
         const normalized = normalizePersonCode(code)
-        return Object.values(get().profiles).find(
+        const fromProfile = Object.values(get().profiles).find(
           (p) => normalizePersonCode(p.personalCode) === normalized,
         )
+        if (fromProfile) return fromProfile
+
+        const person = useDirectoryStore.getState().findPersonByCode(code)
+        if (!person) return undefined
+        return {
+          userKey: person.userKey,
+          role: person.role,
+          fullName: person.fullName,
+          phone: person.phone,
+          facePhoto: person.facePhoto,
+          personalCode: person.personalCode,
+          specializationIds: person.specializationIds,
+          contractorId: person.contractorId,
+          organizationId: person.organizationId,
+          foremanUserKey: person.foremanUserKey,
+          workerMemberId: person.workerMemberId,
+          createdAt: person.updatedAt,
+        }
       },
 
       getAllCodes: () => {

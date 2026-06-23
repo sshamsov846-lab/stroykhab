@@ -2,12 +2,18 @@ import React, { useMemo, useState } from 'react'
 import { Building2, KeyRound, List } from 'lucide-react'
 import type { SpecializationId } from '@/constants/specializations'
 import { specializationLabels } from '@/constants/specializations'
-import type { Contractor } from '@/types/projectWorkflow'
-import { useProjectWorkflowStore } from '@store/projectWorkflowStore'
+import { useDirectoryStore } from '@store/directoryStore'
 import { useTelegram } from '@hooks/useTelegram'
 import { normalizePersonCode } from '@utils/personCodes'
 
 export type OrgLinkMode = 'code' | 'list'
+
+interface OrgOption {
+  id: string
+  name: string
+  specialty: string
+  inviteCode: string
+}
 
 interface Props {
   specializationIds: SpecializationId[]
@@ -32,27 +38,28 @@ export const OrganizationLinkBlock: React.FC<Props> = ({
   foremanMode = false,
 }) => {
   const { haptic } = useTelegram()
-  const getFiltered = useProjectWorkflowStore((s) => s.getContractorsForSpecializations)
-  const contractors = useProjectWorkflowStore((s) => s.contractors)
+  const searchOrganizations = useDirectoryStore((s) => s.searchOrganizations)
+  const orgs = useDirectoryStore((s) => s.orgs)
+  const findOrgByCode = useDirectoryStore((s) => s.findOrgByCode)
 
   const [search, setSearch] = useState('')
 
-  const filteredOrgs = useMemo(
-    () => getFiltered(specializationIds),
-    [getFiltered, specializationIds],
-  )
+  const allOrgs = useMemo((): OrgOption[] => {
+    const list = searchOrganizations(search)
+    return list
+      .filter((o) => {
+        if (!specializationIds.length || !o.specializationIds.length) return true
+        return specializationIds.some((id) => o.specializationIds.includes(id))
+      })
+      .map((o) => ({
+        id: o.contractorId,
+        name: o.name,
+        specialty: o.specialty,
+        inviteCode: o.inviteCode,
+      }))
+  }, [searchOrganizations, search, specializationIds, orgs])
 
-  const displayOrgs = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    if (!q) return filteredOrgs
-    return filteredOrgs.filter(
-      (o) =>
-        o.name.toLowerCase().includes(q)
-        || (o.inviteCode ?? '').toLowerCase().includes(q),
-    )
-  }, [filteredOrgs, search])
-
-  const selectedOrg = contractors.find((o) => o.id === selectedOrgId)
+  const selectedOrg = selectedOrgId ? orgs[selectedOrgId] : findOrgByCode(confirmCode)
   const codeConfirmed =
     !!selectedOrg
     && !!confirmCode.trim()
@@ -65,7 +72,7 @@ export const OrganizationLinkBlock: React.FC<Props> = ({
       </p>
       <p className="text-xs-mobile text-gray-500">
         {foremanMode
-          ? 'Выберите организацию и введите её код ОРГ-XXXX для подтверждения. Организация должна одобрить запрос.'
+          ? 'Выберите организацию и введите её код ОРГ-XXXX. После регистрации вы сразу появитесь в списке прорабов.'
           : 'Выберите организацию из списка.'}
       </p>
 
@@ -95,25 +102,45 @@ export const OrganizationLinkBlock: React.FC<Props> = ({
       <input
         value={search}
         onChange={(e) => setSearch(e.target.value)}
-        placeholder="Поиск по названию или коду ОРГ-XXXX"
+        placeholder="Поиск по названию, ИНН или коду ОРГ-XXXX"
         className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm-mobile"
       />
 
-      <select
-        value={selectedOrgId}
-        onChange={(e) => {
-          onSelectedOrgIdChange(e.target.value)
-          onConfirmCodeChange('')
-        }}
-        className="w-full px-4 py-3 rounded-xl border border-gray-200 text-base-mobile"
-      >
-        <option value="">— выберите организацию —</option>
-        {displayOrgs.map((org: Contractor) => (
-          <option key={org.id} value={org.id}>
-            {org.name} {org.inviteCode ? `· ${org.inviteCode}` : ''}
-          </option>
-        ))}
-      </select>
+      {foremanMode && mode === 'code' && (
+        <div className="space-y-2">
+          <label className="text-sm-mobile font-medium text-gray-700">Код организации</label>
+          <input
+            value={confirmCode}
+            onChange={(e) => {
+              const code = e.target.value.toUpperCase()
+              onConfirmCodeChange(code)
+              const found = findOrgByCode(code)
+              if (found) onSelectedOrgIdChange(found.contractorId)
+              else onSelectedOrgIdChange('')
+            }}
+            placeholder="ОРГ-4521"
+            className="w-full px-4 py-3 rounded-xl border border-gray-200 text-base-mobile uppercase tracking-wide"
+          />
+        </div>
+      )}
+
+      {(foremanMode ? mode !== 'code' : true) && (
+        <select
+          value={selectedOrgId}
+          onChange={(e) => {
+            onSelectedOrgIdChange(e.target.value)
+            onConfirmCodeChange('')
+          }}
+          className="w-full px-4 py-3 rounded-xl border border-gray-200 text-base-mobile"
+        >
+          <option value="">— выберите организацию —</option>
+          {allOrgs.map((org) => (
+            <option key={org.id} value={org.id}>
+              {org.name} {org.inviteCode ? `· ${org.inviteCode}` : ''}
+            </option>
+          ))}
+        </select>
+      )}
 
       {selectedOrg && (
         <div className="bg-gray-50 rounded-xl p-3 flex items-start gap-2">
@@ -121,11 +148,14 @@ export const OrganizationLinkBlock: React.FC<Props> = ({
           <div>
             <p className="text-sm-mobile font-semibold text-gray-900">{selectedOrg.name}</p>
             <p className="text-xs-mobile text-gray-500">{selectedOrg.specialty}</p>
+            {selectedOrg.inn && (
+              <p className="text-xs-mobile text-gray-500">ИНН: {selectedOrg.inn}</p>
+            )}
           </div>
         </div>
       )}
 
-      {selectedOrgId && (
+      {selectedOrgId && foremanMode && mode !== 'code' && (
         <div className="space-y-2">
           <label className="text-sm-mobile font-medium text-gray-700">
             Код организации для подтверждения
@@ -136,28 +166,34 @@ export const OrganizationLinkBlock: React.FC<Props> = ({
             placeholder="ОРГ-4521"
             className="w-full px-4 py-3 rounded-xl border border-gray-200 text-base-mobile uppercase tracking-wide"
           />
-          {confirmCode.trim() && (
-            <p className={`text-xs-mobile rounded-lg p-2 ${
-              codeConfirmed ? 'bg-emerald-50 text-emerald-800' : 'bg-red-50 text-red-800'
-            }`}>
-              {codeConfirmed
-                ? 'Код подтверждён — после регистрации организация получит запрос'
-                : 'Код не совпадает с выбранной организацией'}
-            </p>
-          )}
         </div>
       )}
 
-      {filteredOrgs.length === 0 && (
+      {confirmCode.trim() && foremanMode && (
+        <p className={`text-xs-mobile rounded-lg p-2 ${
+          codeConfirmed ? 'bg-emerald-50 text-emerald-800' : 'bg-red-50 text-red-800'
+        }`}>
+          {codeConfirmed
+            ? 'Код подтверждён — прораб будет привязан к организации'
+            : 'Код не совпадает с выбранной организацией'}
+        </p>
+      )}
+
+      {allOrgs.length === 0 && (
         <p className="text-xs-mobile text-amber-700 bg-amber-50 p-2 rounded-lg">
-          Нет организаций по специализации: {specializationLabels(specializationIds) || '—'}
+          {search.trim()
+            ? 'Организация не найдена. Проверьте код или название.'
+            : `Нет организаций${specializationIds.length ? ` по специализации: ${specializationLabels(specializationIds)}` : ''}. Сначала зарегистрируйте организацию.`}
         </p>
       )}
     </div>
   )
 }
 
-export function isOrgCodeConfirmed(selectedOrg: Contractor | undefined, confirmCode: string): boolean {
+export function isOrgCodeConfirmed(
+  selectedOrg: { inviteCode?: string } | undefined,
+  confirmCode: string,
+): boolean {
   if (!selectedOrg || !confirmCode.trim()) return false
   return normalizePersonCode(confirmCode) === normalizePersonCode(selectedOrg.inviteCode ?? '')
 }

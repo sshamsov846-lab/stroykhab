@@ -8,6 +8,9 @@ import { useProjectWorkflowStore } from '@store/projectWorkflowStore'
 import { useUserStore } from '@store/userStore'
 import { usePersonProfileStore } from '@store/personProfileStore'
 import { useOrganizationStore } from '@store/organizationStore'
+import { useDirectoryStore } from '@store/directoryStore'
+import { syncUsersFromAuth, useUsersStore } from '@store/usersStore'
+import { syncDirectoryFromApp } from '@utils/directorySync'
 
 type RehydrateFn = () => void | Promise<void>
 
@@ -29,19 +32,45 @@ const STORES_BY_KEY: Record<string, RehydrateFn> = {
       syncOrganizationRegistryFromStores()
     })()
   },
+  [STORAGE_KEYS.USERS]: () => {
+    void (async () => {
+      await useUsersStore.persist.rehydrate()
+      syncUsersFromAuth(useUserStore.getState().accounts)
+    })()
+  },
   [STORAGE_KEYS.USER]: () => {
     void (async () => {
       await useUserStore.persist.rehydrate()
+      useUserStore.getState().recoverAccounts()
+      syncUsersFromAuth(useUserStore.getState().accounts)
+      syncDirectoryFromApp()
+      useUserStore.getState().hydrateSession()
       syncOrganizationRegistryFromStores()
     })()
+  },
+  [STORAGE_KEYS.ACCOUNTS]: () => {
+    useUserStore.getState().syncAccountsFromDisk()
+    syncUsersFromAuth(useUserStore.getState().accounts)
   },
   [STORAGE_KEYS.PERSON_PROFILES]: () => {
     void (async () => {
       await usePersonProfileStore.persist.rehydrate()
+      syncDirectoryFromApp()
       syncOrganizationRegistryFromStores()
     })()
   },
-  [STORAGE_KEYS.ORGANIZATION]: () => useOrganizationStore.persist.rehydrate(),
+  [STORAGE_KEYS.ORGANIZATION]: () => {
+    void (async () => {
+      await useOrganizationStore.persist.rehydrate()
+      syncDirectoryFromApp()
+    })()
+  },
+  [STORAGE_KEYS.DIRECTORY]: () => {
+    void (async () => {
+      await useDirectoryStore.persist.rehydrate()
+      syncDirectoryFromApp()
+    })()
+  },
   [STORAGE_KEYS.INVITE_REGISTRY]: () => {
     rebuildInviteRegistryFromStores(
       loadInvitesFromDisk(),

@@ -1,9 +1,10 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useNavigate, Navigate } from 'react-router-dom'
 import { Building2, HardHat, UserCircle, Briefcase, Copy, Check } from 'lucide-react'
 import { BigButton } from '@components/BigButton'
 import { useTelegram } from '@hooks/useTelegram'
-import { useUserStore, ROLE_LABELS, type AppRole, type SavedAccount } from '@store/userStore'
+import { useUserStore, ROLE_LABELS, resolveLogin, normalizeLogin, normalizePhone, type AppRole, type SavedAccount } from '@store/userStore'
+import { maskPhone } from '@utils/accountStorage'
 import { useProjectWorkflowStore } from '@store/projectWorkflowStore'
 import { useOrganizationStore } from '@store/organizationStore'
 import { usePersonProfileStore } from '@store/personProfileStore'
@@ -22,7 +23,11 @@ import type { PersonProfile } from '@/types/person'
 import { WorkerTypePicker } from '@components/register/WorkerTypePicker'
 import { notifyWorkerJoinedForeman } from '@utils/personNotifications'
 import { syncOrganizationRegistryFromStores } from '@utils/objectChain'
+import { syncDirectoryFromApp } from '@utils/directorySync'
+import { syncUsersFromAuth } from '@store/usersStore'
 import { WORKER_TYPE_LABELS, type WorkerEmploymentType } from '@/types/person'
+import type { DirectoryPerson } from '@store/directoryStore'
+import { useDirectoryStore } from '@store/directoryStore'
 
 const roles: { id: AppRole; title: string; desc: string; icon: typeof Building2 }[] = [
   {
@@ -59,33 +64,41 @@ export const Register: React.FC = () => {
   const registered = useUserStore((s) => s.registered)
   const { haptic, user: tgUser } = useTelegram()
   const register = useUserStore((s) => s.register)
-  const login = useUserStore((s) => s.login)
+  const signIn = useUserStore((s) => s.signIn)
   const loginAsAccount = useUserStore((s) => s.loginAsAccount)
   const registerContractor = useProjectWorkflowStore((s) => s.registerContractor)
-  const contractors = useProjectWorkflowStore((s) => s.contractors)
-  const createJoinRequest = useOrganizationStore((s) => s.createJoinRequest)
+  const linkUserByInviteCode = useOrganizationStore((s) => s.linkUserByInviteCode)
   const linkWorkerToForemanAndOrg = useOrganizationStore((s) => s.linkWorkerToForemanAndOrg)
   const allocateCode = usePersonProfileStore((s) => s.allocateCode)
   const registerProfile = usePersonProfileStore((s) => s.registerProfile)
   const createBrigade = useBrigadeStore((s) => s.createBrigade)
   const joinBrigadeByCode = useBrigadeStore((s) => s.joinByCode)
+  const recoverAccounts = useUserStore((s) => s.recoverAccounts)
+  const savedAccounts = useUserStore((s) => s.accounts)
+
+  useEffect(() => {
+    recoverAccounts()
+  }, [recoverAccounts])
 
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [fullName, setFullName] = useState(tgUser?.first_name || '')
   const [phone, setPhone] = useState('')
+  const [loginName, setLoginName] = useState('')
+  const [loginInput, setLoginInput] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [pickAccounts, setPickAccounts] = useState<SavedAccount[] | null>(null)
   const [facePhoto, setFacePhoto] = useState('')
   const [role, setRole] = useState<AppRole | null>(null)
   const [organizationName, setOrganizationName] = useState('')
+  const [organizationInn, setOrganizationInn] = useState('')
   const [specializationIds, setSpecializationIds] = useState<SpecializationId[]>([])
-  const [orgMode, setOrgMode] = useState<OrgLinkMode>('list')
+  const [orgMode, setOrgMode] = useState<OrgLinkMode>('code')
   const [selectedOrgId, setSelectedOrgId] = useState('')
   const [orgConfirmCode, setOrgConfirmCode] = useState('')
   const [foremanCode, setForemanCode] = useState('')
   const [foremanUserKey, setForemanUserKey] = useState('')
-  const [foremanMatch, setForemanMatch] = useState<PersonProfile | null>(null)
+  const [foremanMatch, setForemanMatch] = useState<DirectoryPerson | null>(null)
   const [workerEmploymentType, setWorkerEmploymentType] = useState<WorkerEmploymentType>('hourly')
   const [workerBrigadeMode, setWorkerBrigadeMode] = useState<WorkerBrigadeMode>('solo')
   const [brigadeJoinCode, setBrigadeJoinCode] = useState('')
@@ -96,7 +109,9 @@ export const Register: React.FC = () => {
 
   const showSpec = role != null && ROLES_WITH_SPEC.includes(role)
   const showPhoto = role != null && ROLES_WITH_PHOTO.includes(role)
-  const selectedOrg = contractors.find((o) => o.id === selectedOrgId)
+  const selectedOrg = useDirectoryStore((s) =>
+    selectedOrgId ? s.orgs[selectedOrgId] : s.findOrgByCode(orgConfirmCode),
+  )
 
   if (registered) {
     return <Navigate to="/" replace />
@@ -117,10 +132,27 @@ export const Register: React.FC = () => {
     })
   }
 
+  const handleQuickLogin = (acc: SavedAccount) => {
+    setError('')
+    if (!acc.password && password.length < 4) {
+      setLoginInput(acc.login || acc.phone)
+      setError('Введите пароль ниже — он сохранится для этого аккаунта')
+      return
+    }
+    const result = loginAsAccount(acc.userKey, acc.password ? undefined : password)
+    if (result.ok) {
+      haptic('success')
+      navigate('/', { replace: true })
+    } else {
+      setLoginInput(acc.login || acc.phone)
+      setError(result.reason ?? 'Не удалось войти')
+    }
+  }
+
   const handleLogin = () => {
     setError('')
     setPickAccounts(null)
-    const result = login(phone.trim(), password)
+    const result = signIn(loginInput.trim(), password)
     if (result.ok) {
       haptic('success')
       navigate('/', { replace: true })
@@ -148,6 +180,10 @@ export const Register: React.FC = () => {
       setError('Введите корректный телефон')
       return
     }
+    if (loginName.trim() && loginName.trim().length < 3) {
+      setError('Логин — минимум 3 символа')
+      return
+    }
     if (password.length < 4) {
       setError('Пароль — минимум 4 символа')
       return
@@ -173,10 +209,20 @@ export const Register: React.FC = () => {
       return
     }
 
+    const resolvedLogin = resolveLogin(loginName.trim(), phone.trim())
+    const userKeyPreview = buildUserKey(phone.trim(), role!, '', fullName.trim())
+    const loginTaken = savedAccounts.some(
+      (a) => a.userKey !== userKeyPreview && normalizeLogin(a.login || a.phone) === resolvedLogin,
+    )
+    if (loginTaken) {
+      setError('Этот логин уже занят')
+      return
+    }
+
     haptic('success')
 
     if (role === 'client') {
-      register({ fullName: fullName.trim(), phone: phone.trim(), password, role })
+      register({ fullName: fullName.trim(), phone: phone.trim(), login: resolvedLogin, password, role })
       navigate('/', { replace: true })
       return
     }
@@ -184,6 +230,10 @@ export const Register: React.FC = () => {
     if (role === 'subcontractor') {
       if (!organizationName.trim()) {
         setError('Укажите название организации')
+        return
+      }
+      if (!organizationInn.trim() || organizationInn.replace(/\D/g, '').length < 10) {
+        setError('Укажите корректный ИНН (10 или 12 цифр)')
         return
       }
       const org = registerContractor({
@@ -200,15 +250,19 @@ export const Register: React.FC = () => {
       register({
         fullName: fullName.trim(),
         phone: phone.trim(),
+        login: resolvedLogin,
         password,
         role,
         contractorId: org.id,
         specializationIds,
         organizationName: organizationName.trim(),
+        inn: organizationInn.trim(),
         facePhoto,
         personalCode,
       })
       syncOrganizationRegistryFromStores()
+      syncUsersFromAuth(useUserStore.getState().accounts)
+      syncDirectoryFromApp()
       setCreatedCode(personalCode)
       return
     }
@@ -217,12 +271,16 @@ export const Register: React.FC = () => {
     const personalCode = allocateCode(role === 'foreman' ? 'ПР' : 'М')
 
     if (role === 'foreman') {
-      if (!selectedOrgId || !isOrgCodeConfirmed(selectedOrg, orgConfirmCode)) {
-        setError('Выберите организацию и подтвердите код ОРГ-XXXX')
+      const orgFromCode = useDirectoryStore.getState().findOrgByCode(orgConfirmCode)
+      const org = selectedOrg ?? orgFromCode
+      if (!org || !isOrgCodeConfirmed({ inviteCode: org.inviteCode }, orgConfirmCode)) {
+        setError('Введите правильный код организации ОРГ-XXXX')
         return
       }
-      createJoinRequest({
-        contractorId: selectedOrgId,
+      const contractorId = org.contractorId
+
+      linkUserByInviteCode({
+        contractorId,
         userKey,
         fullName: fullName.trim(),
         phone: phone.trim(),
@@ -231,39 +289,50 @@ export const Register: React.FC = () => {
         facePhoto,
         personalCode,
       })
-      saveProfile(userKey, personalCode, { organizationId: selectedOrgId })
+      saveProfile(userKey, personalCode, {
+        organizationId: contractorId,
+        contractorId,
+      })
       register({
         fullName: fullName.trim(),
         phone: phone.trim(),
+        login: resolvedLogin,
         password,
         role,
         specializationIds,
-        organizationId: selectedOrgId,
-        organizationLinkStatus: 'pending',
+        organizationId: contractorId,
+        organizationName: org.name,
+        organizationLinkStatus: 'approved',
         facePhoto,
         personalCode,
       })
+      syncDirectoryFromApp()
       navigate('/', { replace: true })
       return
     }
 
     if (role === 'worker') {
-      if (!selectedOrgId) {
-        setError('Выберите организацию')
+      const foremanPerson =
+        foremanMatch
+        ?? useDirectoryStore.getState().findPersonByCode(foremanCode)
+      if (!foremanPerson || foremanPerson.role !== 'foreman') {
+        setError('Укажите прораба по коду ПР-XXXX')
         return
       }
-      if (!foremanUserKey || !foremanMatch) {
-        setError('Укажите прораба по коду ПР-XXXX или из списка')
+      const orgId = foremanPerson.organizationId || foremanPerson.contractorId
+      if (!orgId) {
+        setError('У прораба не указана организация')
         return
       }
+      const resolvedForemanKey = foremanPerson.userKey
       const isMemberJoin = !!brigadeJoinCode.trim()
       const employmentType: WorkerEmploymentType =
         workerBrigadeMode === 'brigadier' ? 'brigade' : workerEmploymentType
 
       const linked = linkWorkerToForemanAndOrg({
         userKey,
-        contractorId: selectedOrgId,
-        foremanUserKey,
+        contractorId: orgId,
+        foremanUserKey: resolvedForemanKey,
         fullName: fullName.trim(),
         phone: phone.trim(),
         specializationIds,
@@ -304,8 +373,8 @@ export const Register: React.FC = () => {
       }
 
       saveProfile(userKey, personalCode, {
-        organizationId: selectedOrgId,
-        foremanUserKey,
+        organizationId: orgId,
+        foremanUserKey: resolvedForemanKey,
         workerMemberId: linked.workerMemberId,
         workerEmploymentType: employmentType,
         workerBrigadeMode: brigadeMode,
@@ -313,7 +382,7 @@ export const Register: React.FC = () => {
         brigadeCode: brigadeCode || undefined,
       })
       notifyWorkerJoinedForeman({
-        foremanUserKey,
+        foremanUserKey: resolvedForemanKey,
         workerName: fullName.trim(),
         facePhoto,
         specialization: specialtyTextFromIds(specializationIds),
@@ -323,10 +392,11 @@ export const Register: React.FC = () => {
       register({
         fullName: fullName.trim(),
         phone: phone.trim(),
+        login: resolvedLogin,
         password,
         role,
         specializationIds,
-        organizationId: selectedOrgId,
+        organizationId: orgId,
         organizationLinkStatus: 'approved',
         workerMemberId: linked.workerMemberId,
         facePhoto,
@@ -335,8 +405,9 @@ export const Register: React.FC = () => {
         workerBrigadeMode: brigadeMode,
         brigadeId,
         brigadeCode,
-        foremanUserKey,
+        foremanUserKey: resolvedForemanKey,
       })
+      syncDirectoryFromApp()
       if (workerBrigadeMode === 'brigadier' && !isMemberJoin) return
       navigate('/', { replace: true })
     }
@@ -482,12 +553,13 @@ export const Register: React.FC = () => {
 
           <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 mb-4 space-y-4">
             <div>
-              <label className="text-sm-mobile font-medium text-gray-700">Телефон</label>
+              <label className="text-sm-mobile font-medium text-gray-700">Логин или телефон</label>
               <input
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="+7 (999) 123-45-67"
+                type="text"
+                value={loginInput}
+                onChange={(e) => setLoginInput(e.target.value)}
+                placeholder="ivanov или +7 999 123-45-67"
+                autoComplete="username"
                 className="mt-1 w-full px-4 py-3 rounded-xl border border-gray-200 text-base-mobile focus:outline-none focus:ring-2 focus:ring-primary-500"
               />
             </div>
@@ -505,6 +577,36 @@ export const Register: React.FC = () => {
           </div>
 
           {error && <p className="text-sm-mobile text-red-600 mb-3 text-center">{error}</p>}
+
+          {savedAccounts.length > 0 && (
+            <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 mb-4">
+              <p className="text-sm-mobile font-semibold text-gray-900 mb-3">
+                Сохранённые аккаунты ({savedAccounts.length})
+              </p>
+              <div className="space-y-2">
+                {savedAccounts.map((acc) => (
+                  <button
+                    key={acc.userKey}
+                    type="button"
+                    onClick={() => handleQuickLogin(acc)}
+                    className="w-full text-left p-3 rounded-xl border border-gray-100 bg-gray-50 hover:border-primary-300 hover:bg-primary-50 transition-all"
+                  >
+                    <p className="text-sm-mobile font-bold text-gray-900">{acc.fullName}</p>
+                    <p className="text-xs-mobile text-primary-600 mt-0.5">{ROLE_LABELS[acc.role]}</p>
+                    <p className="text-xs-mobile text-gray-500 mt-0.5">
+                      {acc.login && acc.login !== normalizePhone(acc.phone) ? acc.login : maskPhone(acc.phone)}
+                    </p>
+                    {!acc.password && (
+                      <p className="text-xs-mobile text-amber-600 mt-1">Введите пароль ниже при первом входе</p>
+                    )}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs-mobile text-gray-400 mt-3 text-center">
+                Нажмите на аккаунт для быстрого входа
+              </p>
+            </div>
+          )}
 
           <BigButton variant="primary" size="xl" fullWidth onClick={handleLogin}>
             Войти
@@ -605,6 +707,17 @@ export const Register: React.FC = () => {
               />
             </div>
             <div>
+              <label className="text-sm-mobile font-medium text-gray-700">Логин</label>
+              <input
+                type="text"
+                value={loginName}
+                onChange={(e) => setLoginName(e.target.value)}
+                placeholder="ivanov (необязательно — по умолчанию телефон)"
+                autoComplete="username"
+                className="mt-1 w-full px-4 py-3 rounded-xl border border-gray-200 text-base-mobile focus:outline-none focus:ring-2 focus:ring-primary-500"
+              />
+            </div>
+            <div>
               <label className="text-sm-mobile font-medium text-gray-700">Пароль</label>
               <input
                 type="password"
@@ -627,16 +740,29 @@ export const Register: React.FC = () => {
               />
             </div>
             {role === 'subcontractor' && (
-              <div>
-                <label className="text-sm-mobile font-medium text-gray-700">Название организации</label>
-                <input
-                  type="text"
-                  value={organizationName}
-                  onChange={(e) => setOrganizationName(e.target.value)}
-                  placeholder="ООО «АкваТех»"
-                  className="mt-1 w-full px-4 py-3 rounded-xl border border-gray-200 text-base-mobile"
-                />
-              </div>
+              <>
+                <div>
+                  <label className="text-sm-mobile font-medium text-gray-700">Название организации</label>
+                  <input
+                    type="text"
+                    value={organizationName}
+                    onChange={(e) => setOrganizationName(e.target.value)}
+                    placeholder="ООО «АкваТех»"
+                    className="mt-1 w-full px-4 py-3 rounded-xl border border-gray-200 text-base-mobile"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm-mobile font-medium text-gray-700">ИНН</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={organizationInn}
+                    onChange={(e) => setOrganizationInn(e.target.value.replace(/[^\d]/g, ''))}
+                    placeholder="7701234567"
+                    className="mt-1 w-full px-4 py-3 rounded-xl border border-gray-200 text-base-mobile"
+                  />
+                </div>
+              </>
             )}
           </div>
         )}

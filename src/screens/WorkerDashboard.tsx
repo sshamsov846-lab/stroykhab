@@ -71,6 +71,7 @@ export const WorkerDashboard: React.FC = () => {
   const { isRecording, startRecording, stopRecording } = useVoiceInput()
 
   const fullName = useUserStore((s) => s.fullName)
+  const role = useUserStore((s) => s.role)
 
   const workflowTasks = useProjectWorkflowStore((s) => Object.values(s.tasks))
 
@@ -112,19 +113,19 @@ export const WorkerDashboard: React.FC = () => {
   const brigadeAssignments = useObjectStore((s) => s.brigadeTaskAssignments)
 
   const myTasks = workflowTasks.filter((t) => {
-
     if (t.status === 'done') return false
 
-    if (!canAccessTask(t, 'worker', { workerId: myWorkerId, userKey: getCurrentUserKey() })) return false
+    const userKey = getCurrentUserKey()
+    if (!canAccessTask(t, role, { workerId: myWorkerId, userKey })) return false
+
+    if (role === 'foreman') return true
 
     if (brigadeId && brigadeAssignments[t.id] === brigadeId) return true
 
     const assigned = contractorWorkerAssignments[t.id] || workerAssignments[t.id]
-
     if (!assigned || !myWorkerId) return false
 
     return assigned === myWorkerId
-
   })
 
 
@@ -173,17 +174,16 @@ export const WorkerDashboard: React.FC = () => {
 
         <div>
 
-          <h1 className="text-2xl-mobile font-bold text-gray-900">Мои задачи</h1>
-
+          <h1 className="text-2xl-mobile font-bold text-gray-900">
+            {role === 'foreman' ? 'Задачи объектов' : 'Мои задачи'}
+          </h1>
           <p className="text-sm-mobile text-gray-500">
-
-            {myTasks.length} активных
-
-            {myWorker ? ` · ${myWorker.name}` : ''}
-
+            {role === 'foreman'
+              ? 'Все активные работы на ваших объектах'
+              : `${myTasks.length} активных${myWorker ? ` · ${myWorker.name}` : ''}`}
           </p>
 
-          {!myWorkerId && workflowTasks.some((t) => workerAssignments[t.id] || contractorWorkerAssignments[t.id]) && (
+          {role === 'worker' && !myWorkerId && workflowTasks.some((t) => workerAssignments[t.id] || contractorWorkerAssignments[t.id]) && (
 
             <p className="text-xs-mobile text-amber-700 mt-1">Попросите прораба или подрядчика назначить вас на задачи</p>
 

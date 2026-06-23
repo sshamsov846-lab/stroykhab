@@ -2,11 +2,7 @@ import React, { useMemo, useState } from 'react'
 import { HardHat, KeyRound, Search } from 'lucide-react'
 import type { SpecializationId } from '@/constants/specializations'
 import { specializationLabels } from '@/constants/specializations'
-import type { Contractor } from '@/types/projectWorkflow'
-import { useProjectWorkflowStore } from '@store/projectWorkflowStore'
-import { usePersonProfileStore } from '@store/personProfileStore'
-import { useOrganizationStore } from '@store/organizationStore'
-import type { PersonProfile } from '@/types/person'
+import { useDirectoryStore, type DirectoryPerson } from '@store/directoryStore'
 
 interface Props {
   specializationIds: SpecializationId[]
@@ -16,8 +12,8 @@ interface Props {
   onForemanUserKeyChange: (key: string) => void
   foremanCode: string
   onForemanCodeChange: (code: string) => void
-  foremanMatch: PersonProfile | null
-  onForemanMatchChange: (p: PersonProfile | null) => void
+  foremanMatch: DirectoryPerson | null
+  onForemanMatchChange: (p: DirectoryPerson | null) => void
 }
 
 export const ForemanLinkBlock: React.FC<Props> = ({
@@ -31,82 +27,50 @@ export const ForemanLinkBlock: React.FC<Props> = ({
   foremanMatch,
   onForemanMatchChange,
 }) => {
-  const getFiltered = useProjectWorkflowStore((s) => s.getContractorsForSpecializations)
-  const getByCode = usePersonProfileStore((s) => s.getByCode)
-  const getForemenProfiles = usePersonProfileStore((s) => s.getForemenProfilesForOrg)
-  const orgMembers = useOrganizationStore((s) => s.members)
+  const searchOrganizations = useDirectoryStore((s) => s.searchOrganizations)
+  const orgs = useDirectoryStore((s) => s.orgs)
+  const findPersonByCode = useDirectoryStore((s) => s.findPersonByCode)
+  const getForemenForOrg = useDirectoryStore((s) => s.getForemenForOrg)
 
   const [orgSearch, setOrgSearch] = useState('')
 
-  const filteredOrgs = useMemo(
-    () => getFiltered(specializationIds),
-    [getFiltered, specializationIds],
-  )
-
   const orgOptions = useMemo(() => {
-    const q = orgSearch.trim().toLowerCase()
-    if (!q) return filteredOrgs
-    return filteredOrgs.filter(
+    const list = searchOrganizations(orgSearch)
+    if (!specializationIds.length) return list
+    return list.filter(
       (o) =>
-        o.name.toLowerCase().includes(q)
-        || (o.inviteCode ?? '').toLowerCase().includes(q),
+        !o.specializationIds.length
+        || specializationIds.some((id) => o.specializationIds.includes(id)),
     )
-  }, [filteredOrgs, orgSearch])
+  }, [searchOrganizations, orgSearch, specializationIds, orgs])
 
   const approvedForemen = useMemo(() => {
-    if (!selectedOrgId) return [] as PersonProfile[]
-    return getForemenProfiles(selectedOrgId)
-  }, [selectedOrgId, getForemenProfiles, orgMembers])
+    if (!selectedOrgId) return [] as DirectoryPerson[]
+    return getForemenForOrg(selectedOrgId)
+  }, [selectedOrgId, getForemenForOrg, orgs])
 
   const handleForemanCode = (raw: string) => {
     onForemanCodeChange(raw)
-    const found = getByCode(raw)
+    const found = findPersonByCode(raw)
     if (found?.role === 'foreman') {
       onForemanMatchChange(found)
       onForemanUserKeyChange(found.userKey)
-      if (found.organizationId) onSelectedOrgIdChange(found.organizationId)
+      const orgId = found.organizationId || found.contractorId
+      if (orgId) onSelectedOrgIdChange(orgId)
     } else {
       onForemanMatchChange(null)
       onForemanUserKeyChange('')
     }
   }
 
-  const selectedOrg = filteredOrgs.find((o) => o.id === selectedOrgId)
+  const selectedOrg = selectedOrgId ? orgs[selectedOrgId] : undefined
 
   return (
     <div className="bg-white rounded-2xl p-4 border border-gray-100 space-y-4">
       <p className="text-sm-mobile font-semibold text-gray-900">Привязка к прорабу</p>
-
-      <div className="space-y-2">
-        <label className="text-sm-mobile font-medium text-gray-700">Организация</label>
-        <div className="relative">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input
-            value={orgSearch}
-            onChange={(e) => setOrgSearch(e.target.value)}
-            placeholder="Поиск по названию или коду ОРГ-XXXX"
-            className="w-full pl-9 pr-4 py-3 rounded-xl border border-gray-200 text-sm-mobile"
-          />
-        </div>
-        <select
-          value={selectedOrgId}
-          onChange={(e) => onSelectedOrgIdChange(e.target.value)}
-          className="w-full px-4 py-3 rounded-xl border border-gray-200 text-base-mobile"
-        >
-          <option value="">— выберите организацию —</option>
-          {orgOptions.map((org: Contractor) => (
-            <option key={org.id} value={org.id}>
-              {org.name} {org.inviteCode ? `· ${org.inviteCode}` : ''}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {selectedOrg && (
-        <div className="bg-gray-50 rounded-xl p-3 text-xs-mobile text-gray-600">
-          Организация: <span className="font-semibold text-gray-900">{selectedOrg.name}</span>
-        </div>
-      )}
+      <p className="text-xs-mobile text-gray-500">
+        Введите код прораба ПР-XXXX — организация подставится автоматически.
+      </p>
 
       <div className="space-y-2">
         <label className="text-sm-mobile font-medium text-gray-700 flex items-center gap-1.5">
@@ -139,6 +103,37 @@ export const ForemanLinkBlock: React.FC<Props> = ({
           </div>
         )}
       </div>
+
+      <div className="space-y-2">
+        <label className="text-sm-mobile font-medium text-gray-700">Организация (необязательно)</label>
+        <div className="relative">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input
+            value={orgSearch}
+            onChange={(e) => setOrgSearch(e.target.value)}
+            placeholder="Поиск по названию или коду ОРГ-XXXX"
+            className="w-full pl-9 pr-4 py-3 rounded-xl border border-gray-200 text-sm-mobile"
+          />
+        </div>
+        <select
+          value={selectedOrgId}
+          onChange={(e) => onSelectedOrgIdChange(e.target.value)}
+          className="w-full px-4 py-3 rounded-xl border border-gray-200 text-base-mobile"
+        >
+          <option value="">— выберите организацию —</option>
+          {orgOptions.map((org) => (
+            <option key={org.contractorId} value={org.contractorId}>
+              {org.name} {org.inviteCode ? `· ${org.inviteCode}` : ''}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {selectedOrg && (
+        <div className="bg-gray-50 rounded-xl p-3 text-xs-mobile text-gray-600">
+          Организация: <span className="font-semibold text-gray-900">{selectedOrg.name}</span>
+        </div>
+      )}
 
       {approvedForemen.length > 0 && (
         <div className="space-y-2">

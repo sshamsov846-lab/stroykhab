@@ -6,6 +6,7 @@ import { useUserStore, ROLE_LABELS } from '@store/userStore'
 import { useProjectWorkflowStore } from '@store/projectWorkflowStore'
 import { useOrganizationStore } from '@store/organizationStore'
 import { BrigadeManagePanel } from '@components/brigade/BrigadeManagePanel'
+import { SupabaseConnectionTest } from '@components/SupabaseConnectionTest'
 import { WORKER_TYPE_LABELS } from '@/types/person'
 import { specializationLabels } from '@/constants/specializations'
 import { buildUserKey } from '@utils/notificationFilter'
@@ -176,6 +177,8 @@ export const Settings: React.FC = () => {
           ))}
         </ul>
       </div>
+
+      <SupabaseConnectionTest />
 
       {(role === 'foreman' || role === 'worker' || role === 'subcontractor') && (
         <button

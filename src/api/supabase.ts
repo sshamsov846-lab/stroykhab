@@ -1,4 +1,3 @@
-import { createClient } from '@supabase/supabase-js'
 import type {
   ConstructionObject,
   Task,
@@ -9,19 +8,9 @@ import type {
 } from '@types'
 import { DEMO_HIERARCHY_OBJECTS } from '@api/hierarchy'
 import { getProjects, saveProject } from '@services/dataService'
+import { supabase } from '@utils/supabase/client'
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
-const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
-
-const isPlaceholderEnv =
-  !supabaseUrl ||
-  !supabaseKey ||
-  supabaseUrl.includes('your-project') ||
-  supabaseKey.includes('your-anon')
-
-export const supabase = !isPlaceholderEnv
-  ? createClient(supabaseUrl, supabaseKey)
-  : null
+export { supabase }
 
 const DEMO_OBJECTS: ConstructionObject[] = [
   {

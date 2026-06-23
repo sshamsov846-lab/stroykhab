@@ -77,6 +77,17 @@ export interface ConstructionObject {
   start_date?: string
   end_date?: string
   photo_url?: string
+  /** Фото объекта (конструктор) */
+  photo_urls?: string[]
+  /** Тип объекта из конструктора */
+  object_type?: import('@/types/objectWizard').ObjectWizardType
+  /** Описание / особенности */
+  description?: string
+  /** Контакт на объекте */
+  site_contact_name?: string
+  site_contact_phone?: string
+  work_scope_mode?: import('@/types/objectWizard').ObjectWorkScopeMode
+  selected_work_types?: WorkType[]
   created_at: string
   updated_at?: string
   /** Подработка прораба — не видна заказчику и организациям */

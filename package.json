@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "cap:sync": "cap sync",
     "cap:android": "cap open android",
-    "cap:ios": "cap open ios"
+    "cap:ios": "cap open ios",
+    "db:setup": "node scripts/setup-supabase-schema.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^7.2.0",
@@ -18,7 +19,7 @@
     "@capacitor/haptics": "^7.0.1",
     "@capacitor/ios": "^7.2.0",
     "@hookform/resolvers": "^5.4.0",
-    "@supabase/supabase-js": "^2.49.8",
+    "@supabase/supabase-js": "^2.108.2",
     "clsx": "^2.1.1",
     "date-fns": "^3.6.0",
     "lucide-react": "^0.511.0",
@@ -38,6 +39,7 @@
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.5",
     "@vitejs/plugin-react": "^4.5.2",
+    "pg": "^8.22.0",
     "tailwindcss": "^4.1.8",
     "typescript": "~5.8.3",
     "vite": "^6.3.5"

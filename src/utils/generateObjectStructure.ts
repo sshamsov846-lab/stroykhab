@@ -1,4 +1,5 @@
 import type { ImportRow } from '@/types/projectWorkflow'
+import type { ExcelApartmentRow } from '@/types/projectExcel'
 import type {
   GeneratedObjectStructure,
   GeneratedZone,
@@ -217,6 +218,7 @@ export function generateObjectStructure(
   sections: WizardSectionDraft[],
   aptStep: WizardApartmentsStep,
   territoryOptions: WizardTerritoryOptions,
+  options?: { excelRows?: ExcelApartmentRow[] },
 ): { structure: GeneratedObjectStructure; importRows: ImportRow[] } {
   const structure: GeneratedObjectStructure = {
     objectId,
@@ -233,6 +235,7 @@ export function generateObjectStructure(
   const importRows: ImportRow[] = []
   let globalAptNum = 1
   const houseZonesGenerated = new Set<string>()
+  const excelRows = options?.excelRows ?? []
 
   for (const section of sections) {
     const sectionId = section.id || uid('sec')
@@ -250,11 +253,121 @@ export function generateObjectStructure(
     for (const houseDraft of section.houses) {
       const houseId = houseDraft.id || uid('house')
       const entranceIds: string[] = []
+      const houseWorkTypes = WORK_TEMPLATES[houseDraft.workTemplate ?? aptStep.workTemplate].types
+      const entranceZonesDone = new Set<number>()
+
+      if (excelRows.length > 0) {
+        const byEntrance = new Map<number, ExcelApartmentRow[]>()
+        for (const row of excelRows) {
+          const list = byEntrance.get(row.entrance) ?? []
+          list.push(row)
+          byEntrance.set(row.entrance, list)
+        }
+
+        for (const entranceNum of [...byEntrance.keys()].sort((a, b) => a - b)) {
+          const entranceRows = byEntrance.get(entranceNum)!
+          const entranceId = uid('ent')
+          entranceIds.push(entranceId)
+          structure.entrances[entranceId] = { id: entranceId, houseId, number: entranceNum }
+
+          if (!entranceZonesDone.has(entranceNum)) {
+            if (houseDraft.zoneOptions?.stairwellsElevators) {
+              generateHouseZones(
+                structure,
+                importRows,
+                { id: sectionId, name: section.name },
+                houseDraft,
+                houseId,
+                entranceId,
+                entranceNum,
+                undefined,
+                undefined,
+              )
+            }
+            entranceZonesDone.add(entranceNum)
+          }
+
+          const floorNums = [...new Set(entranceRows.map((r) => r.floor))].sort((a, b) => a - b)
+          for (const floorNum of floorNums) {
+            const floorId = uid('floor')
+            structure.floors[floorId] = {
+              id: floorId,
+              entranceId,
+              kind: 'regular',
+              number: floorNum,
+              label: `Этаж ${floorNum}`,
+            }
+
+            if (houseDraft.zoneOptions?.corridors) {
+              generateHouseZones(
+                structure,
+                importRows,
+                { id: sectionId, name: section.name },
+                houseDraft,
+                houseId,
+                entranceId,
+                entranceNum,
+                floorId,
+                floorNum,
+              )
+            }
+
+            const floorRows = entranceRows
+              .filter((r) => r.floor === floorNum)
+              .sort((a, b) => String(a.apartmentNumber).localeCompare(String(b.apartmentNumber), 'ru', { numeric: true }))
+
+            for (const row of floorRows) {
+              const aptId = uid('apt')
+              const aptNumber = row.apartmentNumber || String(globalAptNum++)
+              structure.apartments[aptId] = {
+                id: aptId,
+                number: aptNumber,
+                entranceId,
+                floorId,
+                workTemplate: houseDraft.workTemplate ?? aptStep.workTemplate,
+                rooms: row.rooms,
+                roomCount: row.rooms,
+                area: row.apartmentArea > 0 ? row.apartmentArea : undefined,
+                label: row.hasKitchen
+                  ? row.kitchenCount > 1
+                    ? `${row.kitchenCount} кухни`
+                    : 'с кухней'
+                  : undefined,
+              }
+              for (const taskType of houseWorkTypes) {
+                importRows.push({
+                  section: section.name,
+                  house: houseDraft.name,
+                  entrance: String(entranceNum),
+                  floor: String(floorNum),
+                  apartmentNumber: aptNumber,
+                  taskType,
+                })
+              }
+            }
+          }
+
+          if (!houseZonesGenerated.has(houseId)) {
+            generateHouseLevelZones(
+              structure,
+              importRows,
+              { id: sectionId, name: section.name },
+              houseDraft,
+              houseId,
+              entranceNum,
+            )
+            houseZonesGenerated.add(houseId)
+          }
+        }
+
+        structure.houses[houseId] = { id: houseId, sectionId, name: houseDraft.name, entranceIds }
+        houseIds.push(houseId)
+        continue
+      }
+
       const entrancesCount = houseDraft.entrancesCount || 1
       const floorsCount = houseDraft.floorsPerEntrance || 1
       const aptsPerFloor = houseDraft.apartmentsPerFloor || aptStep.apartmentsPerFloor || 1
-      const houseWorkTypes = WORK_TEMPLATES[houseDraft.workTemplate ?? aptStep.workTemplate].types
-      const entranceZonesDone = new Set<number>()
 
       for (let e = 1; e <= entrancesCount; e++) {
         const entranceId = uid('ent')

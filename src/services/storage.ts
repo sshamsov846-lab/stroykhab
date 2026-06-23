@@ -3,6 +3,8 @@ import type { StateStorage } from 'zustand/middleware'
 /** Ключи хранилища — единая точка для миграции на сервер */
 export const STORAGE_KEYS = {
   USER: 'stroyhub-user',
+  /** Постоянный реестр аккаунтов — не удаляется при выходе */
+  ACCOUNTS: 'stroyhub-accounts',
   OBJECT: 'stroy-object-store',
   WORKFLOW: 'stroyhub-workflow',
   CLIENT_PORTAL: 'stroy-client-portal',
@@ -30,6 +32,10 @@ export const STORAGE_KEYS = {
   INVITE_REGISTRY: 'stroyhub-invite-registry',
   /** Реестр зарегистрированных организаций */
   ORG_REGISTRY: 'stroyhub-org-registry',
+  /** Единый каталог пользователей и привязок */
+  DIRECTORY: 'stroyhub-directory',
+  /** Все зарегистрированные пользователи (единый реестр) */
+  USERS: 'stroyhub-users',
 } as const
 
 export type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS]

@@ -13,6 +13,7 @@ const NAV_BY_ROLE: Record<AppRole, NavItem[]> = {
     { path: '/objects', label: 'Объекты', icon: Building2 },
     { path: '/materials', label: 'Материалы', icon: Package },
     { path: '/finances', label: 'Финансы', icon: Wallet },
+    { path: '/settings', label: 'Настройки', icon: Settings },
   ],
   foreman: [
     { path: '/', label: 'Объекты', icon: Home },
@@ -23,7 +24,7 @@ const NAV_BY_ROLE: Record<AppRole, NavItem[]> = {
     { path: '/settings', label: 'Настройки', icon: Settings },
   ],
   worker: [
-    { path: '/', label: 'Задачи', icon: ClipboardList },
+    { path: '/', label: 'Задачи', icon: ClipboardList, match: (p) => p === '/' || p === '/worker' },
     { path: '/materials', label: 'Материалы', icon: Package },
     { path: '/worker/money', label: 'Мой счёт', icon: Wallet },
     { path: '/settings', label: 'Настройки', icon: Settings },
@@ -33,6 +34,7 @@ const NAV_BY_ROLE: Record<AppRole, NavItem[]> = {
     { path: '/subcontractor/team', label: 'Моя команда', icon: Users },
     { path: '/subcontractor/tasks', label: 'Задачи', icon: ListTodo },
     { path: '/subcontractor/payroll', label: 'Расчёты', icon: Wallet },
+    { path: '/settings', label: 'Настройки', icon: Settings },
   ],
 }
 
@@ -53,6 +55,12 @@ export const BottomNav: React.FC = () => {
   if (/^\/payroll\/.+/.test(location.pathname)) return null
   if (/^\/subcontractor\/payroll\/.+/.test(location.pathname)) return null
   if (/^\/subcontractor\/team\/.+/.test(location.pathname)) return null
+  if (location.pathname.startsWith('/export')) return null
+  if (location.pathname.startsWith('/side-job')) return null
+  if (location.pathname.startsWith('/rates')) return null
+  if (location.pathname.startsWith('/payment-settings')) return null
+  if (location.pathname.startsWith('/timesheet')) return null
+  if (location.pathname.startsWith('/client/object')) return null
   if (location.pathname.startsWith('/finances/')) return null
   if (location.pathname.startsWith('/worker/calculators')) return null
   if (location.pathname.startsWith('/foreman/calculator-reports')) return null

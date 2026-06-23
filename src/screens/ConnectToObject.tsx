@@ -213,7 +213,7 @@ export const ConnectToObject: React.FC = () => {
 
     else if (role === 'subcontractor') navigate('/')
 
-    else if (role === 'worker') navigate('/worker')
+    else if (role === 'worker') navigate('/')
 
     else navigate('/')
 

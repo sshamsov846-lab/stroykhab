@@ -5,22 +5,41 @@ import { useObjectAccessStore } from '@store/objectAccessStore'
 import { useObjectStore, type TeamMember } from '@store/objectStore'
 import { useOrganizationStore } from '@store/organizationStore'
 import { useUserStore } from '@store/userStore'
+import { useDirectoryStore } from '@store/directoryStore'
+import { syncUsersFromAuth, useUsersStore } from '@store/usersStore'
 import { getPersistedState, STORAGE_KEYS } from '@services/storage'
 import { specialtyTextFromIds } from '@/constants/specializations'
-import { normalizePersonCode } from '@utils/personCodes'
 import type { PersonProfile } from '@/types/person'
+import { loadAccountsFromDisk } from '@utils/accountStorage'
 import {
   getAllOrganizationsFromRegistry,
   registerOrganizationInRegistry,
   resolveUserKeyFromRegistry,
 } from '@utils/orgRegistry'
 
-/** Все организации: реестр + workflow + профили + аккаунты */
+function directoryOrgsToContractors(): Contractor[] {
+  return useDirectoryStore.getState().getOrganizations().map((o) => ({
+    id: o.contractorId,
+    name: o.name,
+    specialty: o.specialty,
+    phone: o.phone,
+    inviteCode: o.inviteCode,
+    specializationIds: o.specializationIds,
+    isRegisteredOrg: true,
+  }))
+}
+
+/** Все организации: каталог + реестр + workflow + профили + аккаунты */
 export function getAllContractorsMerged(): Contractor[] {
   const byId = new Map<string, Contractor>()
 
-  for (const c of getAllOrganizationsFromRegistry()) {
+  for (const c of directoryOrgsToContractors()) {
     byId.set(c.id, c)
+  }
+
+  for (const c of getAllOrganizationsFromRegistry()) {
+    const existing = byId.get(c.id)
+    byId.set(c.id, existing ? { ...c, ...existing, name: existing.name || c.name } : c)
   }
 
   for (const c of [...loadContractorsFromDisk(), ...useProjectWorkflowStore.getState().contractors]) {
@@ -98,30 +117,34 @@ export function getRegisteredOrganizations(): Contractor[] {
 }
 
 export function searchRegisteredContractors(query: string): Contractor[] {
-  const q = query.trim().toLowerCase()
-  const all = getAllContractorsMerged()
-
-  if (!q) return getRegisteredOrganizations()
-
-  return all.filter(
-    (c) =>
-      c.name.toLowerCase().includes(q)
-      || (c.inviteCode ?? '').toLowerCase().includes(q)
-      || normalizePersonCode(c.inviteCode ?? '').includes(normalizePersonCode(q)),
-  )
+  syncUsersFromAuth(useUserStore.getState().accounts)
+  return useUsersStore.getState().searchOrganizationsAsContractors(query)
 }
 
 export async function refreshOrganizationDirectory(): Promise<void> {
   syncOrganizationRegistryFromStores()
   await Promise.all([
+    useUsersStore.persist.rehydrate(),
+    useDirectoryStore.persist.rehydrate(),
     useProjectWorkflowStore.persist.rehydrate(),
     usePersonProfileStore.persist.rehydrate(),
+    useOrganizationStore.persist.rehydrate(),
     useUserStore.persist.rehydrate(),
   ])
+  useUserStore.getState().recoverAccounts()
+  syncUsersFromAuth(useUserStore.getState().accounts)
+  const { syncDirectoryFromApp } = await import('@utils/directorySync')
+  syncDirectoryFromApp()
   syncOrganizationRegistryFromStores()
 }
 
 export function resolveOrgUserKey(contractorId: string): string | undefined {
+  const fromUsers = useUsersStore.getState().findByContractorId(contractorId)?.userKey
+  if (fromUsers) return fromUsers
+
+  const fromDirectory = useDirectoryStore.getState().orgs[contractorId]?.userKey
+  if (fromDirectory) return fromDirectory
+
   const fromRegistry = resolveUserKeyFromRegistry(contractorId)
   if (fromRegistry) return fromRegistry
 
@@ -144,10 +167,6 @@ function loadContractorsFromDisk(): Contractor[] {
 
 function loadProfilesFromDisk(): Record<string, PersonProfile> {
   return getPersistedState<{ profiles: Record<string, PersonProfile> }>(STORAGE_KEYS.PERSON_PROFILES)?.profiles ?? {}
-}
-
-function loadAccountsFromDisk() {
-  return getPersistedState<{ accounts: import('@store/userStore').SavedAccount[] }>(STORAGE_KEYS.USER)?.accounts ?? []
 }
 
 /** Синхронизировать реестр из существующих данных (для старых регистраций) */

@@ -4,10 +4,10 @@ import toast from 'react-hot-toast'
 import { useObjectStore } from '@store/objectStore'
 import { useObjectAccessStore } from '@store/objectAccessStore'
 import { useUserStore } from '@store/userStore'
+import { useUsersStore, syncUsersFromAuth } from '@store/usersStore'
 import {
   refreshOrganizationDirectory,
   resolveOrgUserKey,
-  searchRegisteredContractors,
   syncOrganizationRegistryFromStores,
 } from '@utils/objectChain'
 import type { Contractor } from '@/types/projectWorkflow'
@@ -19,6 +19,7 @@ interface Props {
 
 export const AddOrganizationPanel: React.FC<Props> = ({ objectId, objectName }) => {
   const fullName = useUserStore((s) => s.fullName)
+  const users = useUsersStore((s) => s.users)
   const accessMembers = useObjectAccessStore((s) => s.members)
   const addOrganization = useObjectStore((s) => s.addOrganization)
   const clientAddOrganization = useObjectAccessStore((s) => s.clientAddOrganization)
@@ -34,7 +35,10 @@ export const AddOrganizationPanel: React.FC<Props> = ({ objectId, objectName }) 
     await Promise.all([
       useObjectAccessStore.persist.rehydrate(),
       useUserStore.persist.rehydrate(),
+      useUsersStore.persist.rehydrate(),
     ])
+    useUserStore.getState().recoverAccounts()
+    syncUsersFromAuth(useUserStore.getState().accounts)
     syncOrganizationRegistryFromStores()
     await refreshOrganizationDirectory()
     setRefreshKey((k) => k + 1)
@@ -70,8 +74,8 @@ export const AddOrganizationPanel: React.FC<Props> = ({ objectId, objectName }) 
   )
 
   const results = useMemo(
-    () => searchRegisteredContractors(search).filter((c) => c.isRegisteredOrg),
-    [search, refreshKey],
+    () => useUsersStore.getState().searchOrganizationsAsContractors(search),
+    [search, users, refreshKey],
   )
 
   const handleAdd = (contractor: Contractor) => {

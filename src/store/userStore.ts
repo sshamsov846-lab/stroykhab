@@ -1,17 +1,28 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
-import { createZustandStorage, STORAGE_KEYS } from '@services/storage'
+import { createZustandStorage, getJSON, setJSON, STORAGE_KEYS } from '@services/storage'
 import type { SpecializationId } from '@/constants/specializations'
 import type { OrganizationLinkStatus } from '@store/organizationStore'
 import { buildUserKey } from '@utils/notificationFilter'
 import { registerOrganizationInRegistry } from '@utils/orgRegistry'
 import { specialtyTextFromIds } from '@/constants/specializations'
+import { usePersonProfileStore } from '@store/personProfileStore'
+import {
+  compactAccountForDisk,
+  loadAllAccountsEverywhere,
+  mergeAccounts,
+  resolveAuthAccounts,
+  saveAccountsToDisk,
+} from '@utils/accountStorage'
+import { publishAccountToDirectory, syncDirectoryFromApp } from '@utils/directorySync'
+import { syncUsersFromAuth, useUsersStore } from '@store/usersStore'
 
 export type AppRole = 'client' | 'foreman' | 'worker' | 'subcontractor'
 
 export interface RegisterPayload {
   fullName: string
   phone: string
+  login?: string
   password: string
   role: AppRole
   contractorId?: string
@@ -19,6 +30,7 @@ export interface RegisterPayload {
   organizationId?: string
   organizationLinkStatus?: OrganizationLinkStatus
   organizationName?: string
+  inn?: string
   workerMemberId?: string
   facePhoto?: string
   personalCode?: string
@@ -32,6 +44,7 @@ export interface RegisterPayload {
 /** Постоянная запись аккаунта — не удаляется при выходе */
 export interface SavedAccount {
   userKey: string
+  login: string
   password: string
   fullName: string
   phone: string
@@ -41,6 +54,7 @@ export interface SavedAccount {
   organizationId: string
   organizationLinkStatus: OrganizationLinkStatus
   organizationName: string
+  inn: string
   workerMemberId: string
   facePhoto: string
   personalCode: string
@@ -54,19 +68,19 @@ export interface SavedAccount {
 }
 
 interface UserState {
-  /** Все зарегистрированные аккаунты — хранятся навсегда */
   accounts: SavedAccount[]
-  /** Ключ активной сессии (null = не залогинен) */
   sessionUserKey: string | null
   registered: boolean
   fullName: string
   phone: string
+  loginName: string
   role: AppRole
   contractorId: string
   specializationIds: SpecializationId[]
   organizationId: string
   organizationLinkStatus: OrganizationLinkStatus
   organizationName: string
+  inn: string
   workerMemberId: string
   facePhoto: string
   personalCode: string
@@ -76,10 +90,12 @@ interface UserState {
   brigadeCode: string
   foremanUserKey: string
   register: (data: RegisterPayload) => void
-  login: (phone: string, password: string) => { ok: boolean; reason?: string; pickAccounts?: SavedAccount[] }
-  loginAsAccount: (userKey: string) => { ok: boolean; reason?: string }
+  signIn: (loginOrPhone: string, password: string) => { ok: boolean; reason?: string; pickAccounts?: SavedAccount[] }
+  loginAsAccount: (userKey: string, password?: string) => { ok: boolean; reason?: string }
   logout: () => void
   hydrateSession: () => void
+  syncAccountsFromDisk: () => void
+  recoverAccounts: () => SavedAccount[]
 }
 
 const emptySession = {
@@ -87,12 +103,14 @@ const emptySession = {
   sessionUserKey: null as string | null,
   fullName: '',
   phone: '',
+  loginName: '',
   role: 'foreman' as AppRole,
   contractorId: '',
   specializationIds: [] as SpecializationId[],
   organizationId: '',
   organizationLinkStatus: 'none' as OrganizationLinkStatus,
   organizationName: '',
+  inn: '',
   workerMemberId: '',
   facePhoto: '',
   personalCode: '',
@@ -103,14 +121,36 @@ const emptySession = {
   foremanUserKey: '',
 }
 
-function normalizePhone(phone: string): string {
+export function normalizePhone(phone: string): string {
   return phone.replace(/\D/g, '')
+}
+
+export function normalizeLogin(login: string): string {
+  return login.trim().toLowerCase()
+}
+
+export function resolveLogin(login: string | undefined, phone: string): string {
+  const trimmed = login?.trim()
+  if (trimmed) return normalizeLogin(trimmed)
+  const digits = normalizePhone(phone)
+  return digits || trimmed || ''
+}
+
+function accountMatchesCredential(a: SavedAccount, loginOrPhone: string): boolean {
+  const norm = normalizeLogin(loginOrPhone)
+  const phoneNorm = normalizePhone(loginOrPhone)
+  const accountLogin = normalizeLogin(a.login || a.phone)
+  const accountPhone = normalizePhone(a.phone)
+  if (norm && accountLogin === norm) return true
+  if (phoneNorm.length >= 10 && accountPhone === phoneNorm) return true
+  return false
 }
 
 function accountFromPayload(userKey: string, data: RegisterPayload): SavedAccount {
   const now = new Date().toISOString()
   return {
     userKey,
+    login: resolveLogin(data.login, data.phone),
     password: data.password,
     fullName: data.fullName,
     phone: data.phone,
@@ -120,6 +160,7 @@ function accountFromPayload(userKey: string, data: RegisterPayload): SavedAccoun
     organizationId: data.organizationId ?? '',
     organizationLinkStatus: data.organizationLinkStatus ?? 'none',
     organizationName: data.organizationName ?? '',
+    inn: data.inn ?? '',
     workerMemberId: data.workerMemberId ?? '',
     facePhoto: data.facePhoto ?? '',
     personalCode: data.personalCode ?? '',
@@ -133,27 +174,62 @@ function accountFromPayload(userKey: string, data: RegisterPayload): SavedAccoun
   }
 }
 
-function sessionFromAccount(account: SavedAccount): Omit<UserState, 'accounts' | 'register' | 'login' | 'loginAsAccount' | 'logout' | 'hydrateSession'> {
+function enrichAccountFromProfile(account: SavedAccount): SavedAccount {
+  if (account.facePhoto) return account
+  const profile = usePersonProfileStore.getState().getByUserKey(account.userKey)
+  if (!profile?.facePhoto) return account
+  return { ...account, facePhoto: profile.facePhoto }
+}
+
+function sessionFromAccount(account: SavedAccount): Omit<
+  UserState,
+  'accounts' | 'register' | 'signIn' | 'loginAsAccount' | 'logout' | 'hydrateSession' | 'syncAccountsFromDisk' | 'recoverAccounts'
+> {
+  const enriched = enrichAccountFromProfile(account)
   return {
-    sessionUserKey: account.userKey,
+    sessionUserKey: enriched.userKey,
     registered: true,
-    fullName: account.fullName,
-    phone: account.phone,
-    role: account.role,
-    contractorId: account.contractorId,
-    specializationIds: account.specializationIds,
-    organizationId: account.organizationId,
-    organizationLinkStatus: account.organizationLinkStatus,
-    organizationName: account.organizationName,
-    workerMemberId: account.workerMemberId,
-    facePhoto: account.facePhoto,
-    personalCode: account.personalCode,
-    workerEmploymentType: account.workerEmploymentType,
-    workerBrigadeMode: account.workerBrigadeMode,
-    brigadeId: account.brigadeId,
-    brigadeCode: account.brigadeCode,
-    foremanUserKey: account.foremanUserKey,
+    fullName: enriched.fullName,
+    phone: enriched.phone,
+    loginName: enriched.login || resolveLogin(undefined, enriched.phone),
+    role: enriched.role,
+    contractorId: enriched.contractorId,
+    specializationIds: enriched.specializationIds,
+    organizationId: enriched.organizationId,
+    organizationLinkStatus: enriched.organizationLinkStatus,
+    organizationName: enriched.organizationName,
+    inn: enriched.inn ?? '',
+    workerMemberId: enriched.workerMemberId,
+    facePhoto: enriched.facePhoto,
+    personalCode: enriched.personalCode,
+    workerEmploymentType: enriched.workerEmploymentType,
+    workerBrigadeMode: enriched.workerBrigadeMode,
+    brigadeId: enriched.brigadeId,
+    brigadeCode: enriched.brigadeCode,
+    foremanUserKey: enriched.foremanUserKey,
   }
+}
+
+function commitAccounts(accounts: SavedAccount[]): void {
+  saveAccountsToDisk(accounts.map(compactAccountForDisk))
+  flushUserPersistAccounts(accounts)
+}
+
+function flushUserPersistAccounts(accounts: SavedAccount[]): void {
+  const envelope = getJSON<{ version?: number; state?: Record<string, unknown> }>(STORAGE_KEYS.USER)
+  const prev = envelope?.state ?? {}
+  setJSON(STORAGE_KEYS.USER, {
+    state: { ...prev, accounts: accounts.map(compactAccountForDisk) },
+    version: envelope?.version ?? 5,
+  })
+}
+
+function ensureLoginOnAccounts(accounts: SavedAccount[]): SavedAccount[] {
+  return accounts.map((a) => ({
+    ...a,
+    inn: a.inn ?? '',
+    login: a.login ? normalizeLogin(a.login) : resolveLogin(undefined, a.phone),
+  }))
 }
 
 export const useUserStore = create<UserState>()(
@@ -162,21 +238,53 @@ export const useUserStore = create<UserState>()(
       accounts: [],
       ...emptySession,
 
+      recoverAccounts: () => {
+        const accounts = ensureLoginOnAccounts(resolveAuthAccounts(get().accounts))
+        set({ accounts })
+        commitAccounts(accounts)
+        syncUsersFromAuth(accounts)
+        syncDirectoryFromApp()
+        return accounts
+      },
+
+      syncAccountsFromDisk: () => {
+        const accounts = ensureLoginOnAccounts(resolveAuthAccounts(get().accounts))
+        set({ accounts })
+        commitAccounts(accounts)
+        syncUsersFromAuth(accounts)
+        syncDirectoryFromApp()
+      },
+
       register: (data) => {
         const userKey = buildUserKey(data.phone, data.role, data.contractorId ?? '', data.fullName)
-        const existing = get().accounts.find((a) => a.userKey === userKey)
-        const account = accountFromPayload(userKey, data)
+        const allAccounts = ensureLoginOnAccounts(resolveAuthAccounts(get().accounts))
+        const resolvedLogin = resolveLogin(data.login, data.phone)
+
+        const loginTaken = allAccounts.some(
+          (a) => a.userKey !== userKey && normalizeLogin(a.login || a.phone) === resolvedLogin,
+        )
+        if (loginTaken) {
+          console.warn('[auth] login already taken:', resolvedLogin)
+        }
+
+        const existing = allAccounts.find((a) => a.userKey === userKey)
+        const account = accountFromPayload(userKey, { ...data, login: resolvedLogin })
         account.createdAt = existing?.createdAt ?? account.createdAt
         account.updatedAt = new Date().toISOString()
 
         const accounts = existing
-          ? get().accounts.map((a) => (a.userKey === userKey ? account : a))
-          : [...get().accounts, account]
+          ? allAccounts.map((a) => (a.userKey === userKey ? account : a))
+          : [...allAccounts, account]
 
         set({
           accounts,
           ...sessionFromAccount(account),
         })
+        commitAccounts(accounts)
+
+        useUsersStore.getState().upsertFromAccount(account)
+        syncUsersFromAuth(accounts)
+        publishAccountToDirectory(account)
 
         if (data.role === 'subcontractor' && data.contractorId) {
           registerOrganizationInRegistry({
@@ -191,110 +299,199 @@ export const useUserStore = create<UserState>()(
         }
       },
 
-      login: (phone, password) => {
-        const normalized = normalizePhone(phone)
-        if (normalized.length < 10) return { ok: false, reason: 'Введите корректный телефон' }
+      signIn: (loginOrPhone, password) => {
+        const trimmed = loginOrPhone.trim()
+        if (!trimmed) return { ok: false, reason: 'Введите логин или телефон' }
         if (!password) return { ok: false, reason: 'Введите пароль' }
+        if (password.length < 4) return { ok: false, reason: 'Пароль — минимум 4 символа' }
 
-        const matches = get().accounts.filter(
-          (a) =>
-            normalizePhone(a.phone) === normalized &&
-            (a.password === password || (!a.password && password.length >= 4)),
-        )
-        if (!matches.length) return { ok: false, reason: 'Аккаунт не найден. Проверьте телефон и пароль' }
+        let accounts = ensureLoginOnAccounts(resolveAuthAccounts(get().accounts))
+
+        const matches = accounts.filter((a) => {
+          if (!accountMatchesCredential(a, trimmed)) return false
+          if (!a.password) return true
+          return a.password === password
+        })
+        if (!matches.length) {
+          return { ok: false, reason: 'Аккаунт не найден. Проверьте логин и пароль' }
+        }
         if (matches.length > 1) return { ok: false, pickAccounts: matches }
 
-        const account = matches[0]
+        let account = matches[0]
         if (!account.password) {
-          const accounts = get().accounts.map((a) =>
-            a.userKey === account.userKey
-              ? { ...a, password, updatedAt: new Date().toISOString() }
-              : a,
-          )
-          const updated = { ...account, password }
-          set({ accounts, ...sessionFromAccount(updated) })
-          return { ok: true }
+          account = { ...account, password, updatedAt: new Date().toISOString() }
+          accounts = accounts.map((a) => (a.userKey === account.userKey ? account : a))
         }
 
-        set({ ...sessionFromAccount(account) })
+        set({ accounts, ...sessionFromAccount(account) })
+        commitAccounts(accounts)
+        syncDirectoryFromApp()
         return { ok: true }
       },
 
-      loginAsAccount: (userKey) => {
-        const account = get().accounts.find((a) => a.userKey === userKey)
+      loginAsAccount: (userKey, password) => {
+        const accounts = ensureLoginOnAccounts(resolveAuthAccounts(get().accounts))
+        let account = accounts.find((a) => a.userKey === userKey)
         if (!account) return { ok: false, reason: 'Аккаунт не найден' }
-        set({ ...sessionFromAccount(account) })
+        if (password && account.password && account.password !== password) {
+          return { ok: false, reason: 'Неверный пароль' }
+        }
+        if (password && !account.password) {
+          account = { ...account, password, updatedAt: new Date().toISOString() }
+          const next = accounts.map((a) => (a.userKey === userKey ? account! : a))
+          set({ accounts: next, ...sessionFromAccount(account) })
+          commitAccounts(next)
+          return { ok: true }
+        }
+        set({ accounts, ...sessionFromAccount(account) })
+        commitAccounts(accounts)
+        syncDirectoryFromApp()
         return { ok: true }
       },
 
       logout: () => {
+        const accounts = ensureLoginOnAccounts(resolveAuthAccounts(get().accounts))
+        commitAccounts(accounts)
         set({
-          accounts: get().accounts,
+          accounts,
           ...emptySession,
         })
       },
 
       hydrateSession: () => {
-        const { sessionUserKey, accounts, registered } = get()
-        if (!sessionUserKey) return
-        const account = accounts.find((a) => a.userKey === sessionUserKey)
+        let accounts = ensureLoginOnAccounts(resolveAuthAccounts(get().accounts))
+        let { sessionUserKey, registered } = get()
+
+        if (!sessionUserKey) {
+          set({ accounts })
+          return
+        }
+
+        let account = accounts.find((a) => a.userKey === sessionUserKey)
+
+        if (!account && registered) {
+          const s = get()
+          const fallbackKey = buildUserKey(s.phone, s.role, s.contractorId, s.fullName)
+          account = accounts.find((a) => a.userKey === fallbackKey)
+          if (account) sessionUserKey = account.userKey
+        }
+
         if (!account) {
           set({ accounts, ...emptySession })
           return
         }
-        if (!registered) {
-          set({ ...sessionFromAccount(account), accounts })
-        }
+
+        set({ accounts, ...sessionFromAccount(account) })
       },
     }),
     {
       name: STORAGE_KEYS.USER,
       storage: createJSONStorage(() => createZustandStorage()),
-      version: 2,
-      migrate: (persisted: unknown) => {
+      version: 5,
+      skipHydration: true,
+      partialize: (state) => ({
+        accounts: state.accounts.map(compactAccountForDisk),
+        sessionUserKey: state.sessionUserKey,
+        registered: state.registered,
+        fullName: state.fullName,
+        phone: state.phone,
+        loginName: state.loginName,
+        role: state.role,
+        contractorId: state.contractorId,
+        specializationIds: state.specializationIds,
+        organizationId: state.organizationId,
+        organizationLinkStatus: state.organizationLinkStatus,
+        organizationName: state.organizationName,
+        inn: state.inn,
+        workerMemberId: state.workerMemberId,
+        facePhoto:
+          state.facePhoto?.startsWith('data:') && state.facePhoto.length > 300 ? '' : state.facePhoto,
+        personalCode: state.personalCode,
+        workerEmploymentType: state.workerEmploymentType,
+        workerBrigadeMode: state.workerBrigadeMode,
+        brigadeId: state.brigadeId,
+        brigadeCode: state.brigadeCode,
+        foremanUserKey: state.foremanUserKey,
+      }),
+      merge: (persisted, current) => {
+        const p = persisted as Partial<UserState>
+        const accounts = ensureLoginOnAccounts(mergeAccounts(p.accounts ?? [], loadAllAccountsEverywhere()))
+        return {
+          ...current,
+          ...p,
+          accounts,
+          loginName: p.loginName ?? resolveLogin((p as { login?: string }).login, p.phone ?? ''),
+        }
+      },
+      migrate: (persisted: unknown, version) => {
         const state = persisted as Record<string, unknown>
-        const accounts: SavedAccount[] = (state.accounts as SavedAccount[]) ?? []
+        let accounts = ensureLoginOnAccounts(
+          mergeAccounts((state.accounts as SavedAccount[]) ?? [], loadAllAccountsEverywhere()),
+        )
 
-        // Миграция старого формата: один пользователь без массива accounts
-        if (!accounts.length && state.registered && state.phone && state.fullName) {
+        if (!accounts.length && state.phone && state.fullName) {
           const userKey = buildUserKey(
             String(state.phone),
             state.role as AppRole,
             String(state.contractorId ?? ''),
             String(state.fullName),
           )
-          const legacy: SavedAccount = {
-            userKey,
-            password: '',
-            fullName: String(state.fullName),
-            phone: String(state.phone),
-            role: (state.role as AppRole) ?? 'foreman',
-            contractorId: String(state.contractorId ?? ''),
-            specializationIds: (state.specializationIds as SpecializationId[]) ?? [],
-            organizationId: String(state.organizationId ?? ''),
-            organizationLinkStatus: (state.organizationLinkStatus as OrganizationLinkStatus) ?? 'none',
-            organizationName: String(state.organizationName ?? ''),
-            workerMemberId: String(state.workerMemberId ?? ''),
-            facePhoto: String(state.facePhoto ?? ''),
-            personalCode: String(state.personalCode ?? ''),
-            workerEmploymentType: (state.workerEmploymentType as SavedAccount['workerEmploymentType']) ?? '',
-            workerBrigadeMode: (state.workerBrigadeMode as SavedAccount['workerBrigadeMode']) ?? '',
-            brigadeId: String(state.brigadeId ?? ''),
-            brigadeCode: String(state.brigadeCode ?? ''),
-            foremanUserKey: String(state.foremanUserKey ?? ''),
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          }
-          accounts.push(legacy)
+          accounts = [
+            {
+              userKey,
+              login: resolveLogin(state.login as string | undefined, String(state.phone)),
+              password: String(state.password ?? ''),
+              fullName: String(state.fullName),
+              phone: String(state.phone),
+              role: (state.role as AppRole) ?? 'foreman',
+              contractorId: String(state.contractorId ?? ''),
+              specializationIds: (state.specializationIds as SpecializationId[]) ?? [],
+              organizationId: String(state.organizationId ?? ''),
+              organizationLinkStatus:
+                (state.organizationLinkStatus as OrganizationLinkStatus) ?? 'none',
+              organizationName: String(state.organizationName ?? ''),
+              inn: String(state.inn ?? ''),
+              workerMemberId: String(state.workerMemberId ?? ''),
+              facePhoto: String(state.facePhoto ?? ''),
+              personalCode: String(state.personalCode ?? ''),
+              workerEmploymentType:
+                (state.workerEmploymentType as SavedAccount['workerEmploymentType']) ?? '',
+              workerBrigadeMode: (state.workerBrigadeMode as SavedAccount['workerBrigadeMode']) ?? '',
+              brigadeId: String(state.brigadeId ?? ''),
+              brigadeCode: String(state.brigadeCode ?? ''),
+              foremanUserKey: String(state.foremanUserKey ?? ''),
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+          ]
           state.sessionUserKey = userKey
         }
 
-        if (!state.sessionUserKey && state.registered) {
-          state.sessionUserKey = accounts[0]?.userKey ?? null
+        if (version < 5) {
+          accounts = accounts.map((a) => ({
+            ...a,
+            login: a.login ? normalizeLogin(a.login) : resolveLogin(undefined, a.phone),
+          }))
         }
 
-        state.accounts = accounts
+        if (!state.sessionUserKey && state.registered && accounts.length) {
+          state.sessionUserKey = accounts[0].userKey
+        }
+
+        state.accounts = accounts.map(compactAccountForDisk)
+        state.loginName =
+          (state.loginName as string | undefined)
+          ?? (state.login as string | undefined)
+          ?? resolveLogin(undefined, String(state.phone ?? ''))
+        delete state.login
+        saveAccountsToDisk(accounts)
         return state as unknown as UserState
+      },
+      onRehydrateStorage: () => (state, error) => {
+        if (!state || error) return
+        state.accounts = ensureLoginOnAccounts(resolveAuthAccounts(state.accounts ?? []))
+        syncUsersFromAuth(state.accounts)
+        syncDirectoryFromApp()
       },
     },
   ),
@@ -305,4 +502,8 @@ export const ROLE_LABELS: Record<AppRole, string> = {
   foreman: 'Прораб',
   worker: 'Мастер',
   subcontractor: 'Организация',
+}
+
+export function getSavedAccounts(): SavedAccount[] {
+  return ensureLoginOnAccounts(resolveAuthAccounts(useUserStore.getState().accounts))
 }
